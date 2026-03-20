@@ -1,0 +1,7 @@
+tmp/
+target/
+bak/
+
+.env
+
+__pycache__/

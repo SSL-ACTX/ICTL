@@ -1,0 +1,421 @@
+// src/analysis/analyzer.rs
+use crate::frontend::ast::*;
+use std::collections::{HashMap, HashSet};
+use thiserror::Error;
+
+#[allow(dead_code)]
+#[derive(Debug, Error)]
+pub enum SemanticErrorKind {
+    #[error("Compile-Time Entropic Violation: '{0}' has been consumed or decayed and cannot be moved/reused.")]
+    UseAfterConsume(String),
+    #[error("Merge Collision: Variable '{0}' produced in multiple branches requires a resolution strategy.")]
+    UnresolvedMerge(String),
+    #[error("Branch Leak: Variable '{0}' is consumed in one branch but accessed in a parallel timeline.")]
+    CrossBranchViolation(String),
+    #[error("Invalid Access: '{0}' is not a structure or has decayed.")]
+    InvalidStructuralAccess(String),
+    #[error("Capability violation: Required capability '{0}' is not declared in this isolate.")]
+    MissingCapability(String),
+}
+
+#[derive(Debug)]
+pub struct SemanticError {
+    pub kind: SemanticErrorKind,
+    pub branch: String,
+    pub statement: Option<String>,
+    pub file: Option<String>,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+}
+
+impl std::fmt::Display for SemanticError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let location_prefix = match (&self.file, self.line, self.column) {
+            (Some(file), Some(line), Some(col)) => {
+                format!("{}:{}:{}", file, line, col)
+            }
+            _ => "<unknown>".to_string(),
+        };
+
+        write!(f, "error: {}\n --> {}\n  |\n", self.kind, location_prefix)?;
+
+        if let Some(ref stmt) = self.statement {
+            write!(f, "  | {}\n", stmt)?;
+        }
+
+        write!(f, "  |\n  = note: branch '{}'\n", self.branch)?;
+
+        Ok(())
+    }
+}
+
+impl std::error::Error for SemanticError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+#[derive(Clone, Default)]
+struct BranchState {
+    consumed: HashSet<String>,
+    yields: HashSet<String>, // Variables produced or re-assigned in this branch
+}
+
+pub struct EntropicAnalyzer {
+    // Tracks the entropic state of every active timeline branch
+    branch_contexts: HashMap<String, BranchState>,
+    current_branch: String,
+    current_statement: Option<String>,
+    current_span: Option<crate::frontend::ast::Span>,
+    source: Option<String>,
+    filename: Option<String>,
+    capability_stack: Vec<HashSet<String>>,
+}
+
+impl EntropicAnalyzer {
+    pub fn new() -> Self {
+        let mut contexts = HashMap::new();
+        contexts.insert("main".to_string(), BranchState::default());
+        Self {
+            branch_contexts: contexts,
+            current_branch: "main".to_string(),
+            current_statement: None,
+            current_span: None,
+            source: None,
+            filename: None,
+            capability_stack: Vec::new(),
+        }
+    }
+
+    pub fn analyze_program_with_source(
+        &mut self,
+        program: &Program,
+        source: &str,
+        filename: &str,
+    ) -> Result<(), SemanticError> {
+        self.source = Some(source.to_string());
+        self.filename = Some(filename.to_string());
+        let result = self.analyze_program(program);
+        self.source = None;
+        self.filename = None;
+        result
+    }
+
+    fn annotate(&self, kind: SemanticErrorKind) -> SemanticError {
+        let (line, column) =
+            if let (Some(span), Some(src)) = (&self.current_span, &self.source) {
+                let before = &src[..span.start];
+                let ln = before.lines().count() + 1;
+                let col = before
+                    .lines()
+                    .last()
+                    .map(|line| line.len() + 1)
+                    .unwrap_or(1);
+                (Some(ln), Some(col))
+            } else {
+                (None, None)
+            };
+
+        SemanticError {
+            kind,
+            branch: self.current_branch.clone(),
+            statement: self.current_statement.clone(),
+            file: self.filename.clone(),
+            line,
+            column,
+        }
+    }
+
+    fn is_capability_allowed(&self, cap: &str) -> bool {
+        self.capability_stack
+            .iter()
+            .rev()
+            .any(|set| set.contains(cap))
+    }
+
+    pub fn analyze_program(
+        &mut self,
+        program: &Program,
+    ) -> Result<(), SemanticError> {
+        for block in &program.timelines {
+            // Root-level blocks typically start in the context specified by the timeline block
+            let old_branch = self.current_branch.clone();
+            if let TimeCoordinate::Branch(id) = &block.time {
+                self.current_branch = id.clone();
+            }
+
+            for stmt in &block.statements {
+                let old_stmt = self.current_statement.clone();
+                let old_span = self.current_span.clone();
+                self.current_statement = Some(self.statement_snippet(stmt));
+                self.current_span = Some(stmt.span.clone());
+                self.analyze_statement(stmt)?;
+                self.current_statement = old_stmt;
+                self.current_span = old_span;
+            }
+
+            self.current_branch = old_branch;
+        }
+        Ok(())
+    }
+
+    fn analyze_statement(
+        &mut self,
+        stmt: &crate::frontend::ast::SpannedStatement,
+    ) -> Result<(), SemanticError> {
+        match &stmt.stmt {
+            Statement::RelativisticBlock { time, body } => {
+                let old_branch = self.current_branch.clone();
+                // If the block specifies a branch, shift the analyzer's focus
+                if let TimeCoordinate::Branch(id) = time {
+                    self.current_branch = id.clone();
+                }
+
+                for inner_stmt in body {
+                    self.analyze_statement(inner_stmt)?;
+                }
+
+                self.current_branch = old_branch;
+            }
+            Statement::Watchdog { recovery, .. } => {
+                // Analyze recovery statements in the current monitor branch context
+                for inner_stmt in recovery {
+                    self.analyze_statement(inner_stmt)?;
+                }
+            }
+            Statement::Isolate(block) => {
+                let mut cap_set = HashSet::new();
+                for cap in &block.manifest.capabilities {
+                    cap_set.insert(cap.path.clone());
+                }
+                self.capability_stack.push(cap_set);
+
+                for inner_stmt in &block.body {
+                    self.analyze_statement(inner_stmt)?;
+                }
+
+                self.capability_stack.pop();
+            }
+            Statement::Assignment { target, expr } => {
+                self.analyze_expression(expr)?;
+                let state =
+                    self.branch_contexts.get_mut(&self.current_branch).unwrap();
+
+                // Assigning to a target "revives" it in this timeline
+                state.consumed.remove(target);
+                state.yields.insert(target.clone());
+            }
+            Statement::Split { parent, branches } => {
+                let parent_state = self
+                    .branch_contexts
+                    .get(parent)
+                    .cloned()
+                    .unwrap_or_default();
+
+                for branch in branches {
+                    // MITOSIS: Children inherit the 'consumed' history (causal past)
+                    // but start with zero 'yields' (local production).
+                    self.branch_contexts.insert(
+                        branch.clone(),
+                        BranchState {
+                            consumed: parent_state.consumed.clone(),
+                            yields: HashSet::new(),
+                        },
+                    );
+                }
+                // The split parent identifier itself is consumed by the split operation
+                self.mark_consumed(parent)?;
+            }
+            Statement::Merge {
+                branches,
+                target,
+                resolutions,
+            } => {
+                let mut all_yields = HashSet::new();
+                let mut collisions = HashSet::new();
+
+                for branch_name in branches {
+                    let branch_state =
+                        self.branch_contexts.get(branch_name).ok_or_else(|| {
+                            self.annotate(SemanticErrorKind::CrossBranchViolation(
+                                branch_name.clone(),
+                            ))
+                        })?;
+
+                    for y in &branch_state.yields {
+                        if !all_yields.insert(y.clone()) {
+                            collisions.insert(y.clone());
+                        }
+                    }
+                }
+
+                // Verify every collision has an explicit resolution rule
+                for key in collisions {
+                    if !resolutions.rules.contains_key(&key) {
+                        return Err(
+                            self.annotate(SemanticErrorKind::UnresolvedMerge(key))
+                        );
+                    }
+                }
+
+                let target_state =
+                    self.branch_contexts.entry(target.clone()).or_default();
+                for y in all_yields {
+                    // Merging yields into the target branch revives them
+                    target_state.yields.insert(y.clone());
+                    target_state.consumed.remove(&y);
+                }
+            }
+            Statement::Send { value_id, .. } => {
+                self.mark_consumed(value_id)?;
+            }
+            Statement::ChannelSend { value_id, .. } => {
+                // Sending to a channel is a destructive move
+                self.mark_consumed(value_id)?;
+            }
+            Statement::Expression(expr) => {
+                self.analyze_expression(expr)?;
+            }
+            Statement::Commit(body) => {
+                for inner_stmt in body {
+                    self.analyze_statement(inner_stmt)?;
+                }
+            }
+            Statement::Anchor(_)
+            | Statement::Rewind(_)
+            | Statement::ChannelOpen { .. }
+            | Statement::NetworkRequest { .. }
+            | Statement::AcausalReset { .. } => {
+                // These statements have no direct impact on the local arena's entropy
+            }
+            Statement::Capability(cap) => {
+                if !self.is_capability_allowed(&cap.path) {
+                    return Err(self.annotate(
+                        SemanticErrorKind::MissingCapability(cap.path.clone()),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn analyze_expression(
+        &mut self,
+        expr: &Expression,
+    ) -> Result<(), SemanticError> {
+        match expr {
+            Expression::Identifier(name) => self.mark_consumed(name),
+            Expression::FieldAccess { parent, .. } => {
+                // Structural Decay: Accessing a field consumes the "wholeness" of the parent.
+                self.mark_consumed(parent)
+            }
+            Expression::CloneOp(name) => {
+                let state = self.branch_contexts.get(&self.current_branch).unwrap();
+                if state.consumed.contains(name) {
+                    return Err(self.annotate(SemanticErrorKind::UseAfterConsume(
+                        name.clone(),
+                    )));
+                }
+                Ok(())
+            }
+            Expression::StructLit(fields) => {
+                for (_, inner_expr) in fields {
+                    self.analyze_expression(inner_expr)?;
+                }
+                Ok(())
+            }
+            Expression::ChannelReceive(_) | Expression::Literal(_) => {
+                // Receive creates new state; Literals are constant
+                Ok(())
+            }
+        }
+    }
+
+    fn mark_consumed(&mut self, name: &str) -> Result<(), SemanticError> {
+        let state = self.branch_contexts.get_mut(&self.current_branch).unwrap();
+        if state.consumed.contains(name) {
+            return Err(
+                self.annotate(SemanticErrorKind::UseAfterConsume(name.to_string()))
+            );
+        }
+        state.consumed.insert(name.to_string());
+        Ok(())
+    }
+
+    fn statement_snippet(
+        &self,
+        stmt: &crate::frontend::ast::SpannedStatement,
+    ) -> String {
+        match &stmt.stmt {
+            Statement::Assignment { target, expr } => {
+                format!("let {} = {}", target, self.expr_snippet(expr))
+            }
+            Statement::Split { parent, branches } => {
+                format!("split {} into [{}]", parent, branches.join(","))
+            }
+            Statement::Merge {
+                branches, target, ..
+            } => {
+                format!("merge [{}] into {}", branches.join(","), target)
+            }
+            Statement::Anchor(name) => format!("anchor {}", name),
+            Statement::Rewind(name) => format!("rewind_to({})", name),
+            Statement::Commit(_) => "commit { ... }".to_string(),
+            Statement::Send {
+                value_id,
+                target_branch,
+            } => {
+                format!("send {} to {}", value_id, target_branch)
+            }
+            Statement::ChannelOpen { name, capacity } => {
+                format!("open_chan {}({})", name, capacity)
+            }
+            Statement::ChannelSend { chan_id, value_id } => {
+                format!("chan_send {}({})", chan_id, value_id)
+            }
+            Statement::Watchdog {
+                target, timeout_ms, ..
+            } => {
+                format!("watchdog {} timeout {}ms", target, timeout_ms)
+            }
+            Statement::AcausalReset {
+                target,
+                anchor_name,
+            } => {
+                format!("reset {} to {}", target, anchor_name)
+            }
+            Statement::NetworkRequest { domain } => {
+                format!("network_request \"{}\"", domain)
+            }
+            Statement::Isolate(block) => format!(
+                "isolate {} {{ ... }}",
+                block.name.clone().unwrap_or_default()
+            ),
+            Statement::RelativisticBlock { time, .. } => match time {
+                TimeCoordinate::Branch(id) => format!("@{}: {{ ... }}", id),
+                _ => "relativistic block".to_string(),
+            },
+            Statement::Capability(cap) => format!("require {}(...)", cap.path),
+            _ => format!("{:?}", stmt),
+        }
+    }
+
+    fn expr_snippet(&self, expr: &Expression) -> String {
+        match expr {
+            Expression::Literal(v) => format!("\"{}\"", v),
+            Expression::Identifier(v) => v.clone(),
+            Expression::FieldAccess { parent, field } => {
+                format!("{}.{}", parent, field)
+            }
+            Expression::CloneOp(v) => format!("clone({})", v),
+            Expression::StructLit(fields) => {
+                let mut parts = Vec::new();
+                for (k, v) in fields {
+                    parts.push(format!("{} = {}", k, self.expr_snippet(v)));
+                }
+                format!("struct {{ {} }}", parts.join(", "))
+            }
+            Expression::ChannelReceive(id) => format!("chan_recv({})", id),
+        }
+    }
+}

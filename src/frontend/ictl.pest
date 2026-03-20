@@ -1,0 +1,72 @@
+// src/ictl.pest
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
+
+program = { SOI ~ timeline_block+ ~ EOI }
+
+timeline_block = { "@" ~ time_coord ~ ":" ~ statement_block }
+
+time_coord     = { relative_time | absolute_time | branch_name }
+absolute_time  = @{ ASCII_DIGIT+ ~ "ms" }
+relative_time  = @{ "+" ~ ASCII_DIGIT+ ~ "ms" }
+branch_name    = { identifier }
+
+statement_block = { "{" ~ statement* ~ "}" | statement }
+
+statement = {
+    isolate_stmt
+    | split_stmt
+    | merge_stmt
+    | anchor_stmt
+    | rewind_stmt
+    | commit_stmt
+    | assignment_stmt
+    | open_chan_stmt
+    | chan_send_stmt
+    | require_decl
+    | timeline_block
+    | watchdog_stmt
+    | reset_stmt
+    | network_request_stmt
+}
+
+network_request_stmt = { "network_request" ~ string_literal }
+
+isolate_stmt = { "isolate" ~ identifier? ~ "{" ~ manifest ~ statement* ~ "}" }
+manifest     = { (resource_decl | require_decl)* }
+resource_decl = { "enable" ~ identifier ~ "(" ~ amount ~ unit? ~ ")" }
+amount       = @{ ASCII_DIGIT+ }
+unit         = { "ms" | "KB" | "MB" | "bytes" }
+
+require_decl  = { "require" ~ capability_path ~ ("(" ~ param_list ~ ")")? }
+capability_path = @{ identifier ~ ("." ~ identifier)* }
+param_list      = { param ~ ("," ~ param)* }
+param           = { identifier ~ "=" ~ (string_literal | identifier) }
+
+split_stmt = { "split" ~ identifier ~ "into" ~ "[" ~ identifier_list ~ "]" }
+merge_stmt = { "merge" ~ "[" ~ identifier_list ~ "]" ~ "into" ~ identifier ~ ("resolving" ~ "(" ~ resolution_rules ~ ")")? }
+identifier_list = { identifier ~ ("," ~ identifier)* }
+resolution_rules = { res_rule ~ ("," ~ res_rule)* }
+res_rule = { identifier ~ "=" ~ identifier }
+
+anchor_stmt = { "anchor" ~ identifier }
+rewind_stmt = { "rewind_to" ~ "(" ~ identifier ~ ")" }
+commit_stmt = { "commit" ~ "{" ~ statement* ~ "}" }
+assignment_stmt = { "let" ~ identifier ~ "=" ~ expression }
+
+open_chan_stmt = { "open_chan" ~ identifier ~ "(" ~ amount ~ ")" }
+chan_send_stmt = { "chan_send" ~ identifier ~ "(" ~ identifier ~ ")" }
+
+watchdog_stmt = { "watchdog" ~ identifier ~ "timeout" ~ amount ~ "ms" ~ ("recovery" ~ statement_block)? }
+
+reset_stmt = { "reset" ~ identifier ~ "to" ~ identifier }
+
+expression = { chan_recv_expr | struct_lit | clone_op | field_access | identifier_expr | string_literal }
+struct_lit = { "struct" ~ "{" ~ param_list ~ "}" }
+clone_op   = { "clone" ~ "(" ~ identifier ~ ")" }
+field_access = { identifier ~ "." ~ identifier }
+identifier_expr = { identifier }
+chan_recv_expr = { "chan_recv" ~ "(" ~ identifier ~ ")" }
+
+identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+string_literal = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }

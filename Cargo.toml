@@ -1,0 +1,24 @@
+# Cargo.toml
+[package]
+name = "ictl"
+version = "0.1.0"
+edition = "2021"
+description = "Compiler and VM for the Isolated Capability Timeline Language (ICTL)"
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "2.0.18"
+pest = "2.7"
+pest_derive = "2.7"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+strip = true
+panic = "abort"
+

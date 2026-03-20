@@ -1,0 +1,16 @@
+@0ms: {
+  open_chan c(2)
+  split main into [worker]
+  @main: {
+    let greeting = "hello"
+    chan_send c(greeting)
+  }
+}
+
+@worker: {
+  anchor start
+  let received = chan_recv(c)
+  commit {
+    let done = "done"
+  }
+}
