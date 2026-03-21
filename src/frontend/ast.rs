@@ -97,6 +97,22 @@ pub enum Statement {
         max_ms: u64,
         body: Vec<SpannedStatement>,
     },
+    For {
+        item_name: String,
+        mode: ForMode,
+        source: String,
+        body: Vec<SpannedStatement>,
+        pacing_ms: Option<u64>,
+        max_ms: Option<u64>,
+    },
+    SplitMap {
+        item_name: String,
+        mode: ForMode,
+        source: String,
+        body: Vec<SpannedStatement>,
+        reconcile: Option<MergeResolution>,
+    },
+    Yield(String),
     AcausalReset {
         target: String,
         anchor_name: String,
@@ -139,6 +155,12 @@ pub enum ResolutionStrategy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForMode {
+    Consume,
+    Clone,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expression {
     Literal(String),
     Identifier(String),
@@ -148,6 +170,7 @@ pub enum Expression {
     },
     CloneOp(String),
     StructLit(HashMap<String, Expression>),
+    ArrayLiteral(Vec<Expression>),
     ChannelReceive(String),
     Integer(i64),
     BinaryOp {

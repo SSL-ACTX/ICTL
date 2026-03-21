@@ -33,6 +33,10 @@
 * **Timelines & Clocks:** Split timelines branch into isolated arenas. Each instruction advances a local clock deterministically.
 * **Channels:** Destructive message passing across timelines utilizing `open_chan`, `chan_send`, and `chan_recv`.
 * **Watchdogs & Anchors:** Monitors can reset failing branches to prior anchors (acausal resets) to dynamically recover temporal computations.
+* **Paced Iteration (`for` + `split_map`):** New iteration primitives support explicit entropic collection semantics, deterministic timing via `pacing`, and scatter-gather parallel execution with `split_map`.
+* **Conditional Branching (`if` / `else`):** Explicit path reconciliation is required when branches consume shared values.
+
+> See [docs/docs.md](docs/docs.md) for language docs and pages (iteration, split_map, if/else, syntax, semantics).
 
 ---
 

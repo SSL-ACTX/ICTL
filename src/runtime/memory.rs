@@ -30,6 +30,7 @@ pub enum Payload {
     Integer(i64),
     String(String),
     Struct(HashMap<String, EntropicState>),
+    Array(Vec<Payload>),
 }
 
 impl Payload {
@@ -55,6 +56,10 @@ impl Payload {
                     .sum();
                 // 16 bytes overhead for struct metadata/map pointers
                 fields_weight + 16
+            }
+            Payload::Array(elems) => {
+                let total: u64 = elems.iter().map(|p| p.weight()).sum();
+                total + 16
             }
         }
     }

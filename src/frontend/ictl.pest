@@ -17,12 +17,15 @@ statement = {
     isolate_stmt
     | split_stmt
     | merge_stmt
+    | split_map_stmt
+    | for_stmt
     | anchor_stmt
     | rewind_stmt
     | commit_stmt
     | if_stmt
     | break_stmt
     | loop_stmt
+    | yield_stmt
     | assignment_stmt
     | open_chan_stmt
     | chan_send_stmt
@@ -34,6 +37,13 @@ statement = {
 }
 
 break_stmt = { "break" }
+
+for_mode = { "consume" | "clone" }
+for_stmt = { "for" ~ identifier ~ for_mode ~ identifier ~ pacing_opt? ~ max_opt? ~ "{" ~ statement* ~ "}" }
+split_map_stmt = { "split_map" ~ identifier ~ for_mode ~ identifier ~ "{" ~ statement* ~ "}" ~ "reconcile" ~ "(" ~ resolution_rules ~ ")" }
+
+pacing_opt = { "pacing" ~ amount ~ "ms" }
+max_opt = { "(" ~ "max" ~ amount ~ "ms" ~ ")" }
 
 if_stmt = { "if" ~ "(" ~ expression ~ ")" ~ statement_block ~ ("else" ~ statement_block)? ~ ("reconcile" ~ "(" ~ resolution_rules ~ ")")? }
 loop_stmt = { "loop" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ statement* ~ "}" }
@@ -68,6 +78,7 @@ chan_send_stmt = { "chan_send" ~ identifier ~ "(" ~ identifier ~ ")" }
 watchdog_stmt = { "watchdog" ~ identifier ~ "timeout" ~ amount ~ "ms" ~ ("recovery" ~ statement_block)? }
 
 reset_stmt = { "reset" ~ identifier ~ "to" ~ identifier }
+yield_stmt = { "yield" ~ identifier }
 
 expression = { relational_expr }
 relational_expr = {
@@ -76,7 +87,9 @@ relational_expr = {
 additive_expr = { multiplicative_expr ~ (("+" | "-") ~ multiplicative_expr)* }
 multiplicative_expr = { unary_expr ~ (("*" | "/") ~ unary_expr)* }
 unary_expr = { "-" ~ unary_expr | primary_expr }
-primary_expr = { chan_recv_expr | struct_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
+primary_expr = { chan_recv_expr | struct_lit | array_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
+
+array_lit = { "[" ~ expression ~ ("," ~ expression)* ~ "]" }
 
 integer_literal = @{ "-"? ~ ASCII_DIGIT+ }
 struct_lit = { "struct" ~ "{" ~ param_list ~ "}" }

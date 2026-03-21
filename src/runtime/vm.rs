@@ -46,6 +46,10 @@ pub enum TemporalError {
     InvalidBreak,
     #[error("Watchdog bite: Branch '{0}' exceeded {1}ms limit")]
     WatchdogBite(String, u64),
+    #[error("Pacing violation: body cost exceeded pacing")]
+    PacingViolation,
+    #[error("Invalid loop budget: max must be >0")]
+    InvalidLoopBudget,
 }
 
 pub struct Vm {
@@ -385,8 +389,185 @@ impl Vm {
                     branch.consume_budget(padding)?;
                 }
             }
+            Statement::For {
+                item_name,
+                mode,
+                source,
+                body,
+                pacing_ms,
+                max_ms,
+            } => {
+                let source_payload = {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    let source_payload = match mode {
+                        crate::frontend::ast::ForMode::Consume => {
+                            branch.arena.consume(source)?
+                        }
+                        crate::frontend::ast::ForMode::Clone => branch
+                            .arena
+                            .peek(source)
+                            .ok_or(MemoryError::AlreadyConsumed)?,
+                    };
+                    source_payload
+                };
+
+                let elements = match source_payload {
+                    Payload::Array(vec) => vec,
+                    _ => {
+                        return Err(TemporalError::EvalError(
+                            "for-source must be array".into(),
+                        ))
+                    }
+                };
+
+                let mut elapsed = 0;
+                let max_allowed = max_ms.unwrap_or(u64::MAX);
+
+                for item_value in elements.into_iter() {
+                    if elapsed >= max_allowed {
+                        break;
+                    }
+
+                    {
+                        let branch = self.get_branch_mut(branch_id)?;
+                        branch.arena.insert(
+                            item_name.clone(),
+                            EntropicState::Valid(item_value),
+                        )?;
+                    }
+
+                    let iteration_start =
+                        self.get_branch_mut(branch_id)?.local_clock;
+                    for stmt in body {
+                        self.execute_statement(branch_id, stmt)?;
+                        if self.get_branch_mut(branch_id)?.break_requested {
+                            let branch = self.get_branch_mut(branch_id)?;
+                            branch.break_requested = false;
+                            break;
+                        }
+                    }
+
+                    let body_cost = self.get_branch_mut(branch_id)?.local_clock
+                        - iteration_start;
+                    let paced = pacing_ms.unwrap_or(body_cost);
+
+                    if body_cost > paced {
+                        return Err(TemporalError::PacingViolation);
+                    }
+
+                    let pad = paced - body_cost;
+                    if pad > 0 {
+                        let branch = self.get_branch_mut(branch_id)?;
+                        branch.local_clock += pad;
+                        branch.consume_budget(pad)?;
+                    }
+
+                    elapsed += paced;
+                }
+
+                if let Some(max) = max_ms {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    if branch.local_clock < *max {
+                        let padding = *max - branch.local_clock;
+                        branch.local_clock += padding;
+                        branch.consume_budget(padding)?;
+                    }
+                }
+            }
+            Statement::SplitMap {
+                item_name,
+                mode,
+                source,
+                body,
+                reconcile,
+            } => {
+                let source_payload = {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    match mode {
+                        crate::frontend::ast::ForMode::Consume => {
+                            branch.arena.consume(source)?
+                        }
+                        crate::frontend::ast::ForMode::Clone => branch
+                            .arena
+                            .peek(source)
+                            .ok_or(MemoryError::AlreadyConsumed)?,
+                    }
+                };
+                let elements = match source_payload {
+                    Payload::Array(vec) => vec,
+                    _ => {
+                        return Err(TemporalError::EvalError(
+                            "split_map source must be array".into(),
+                        ))
+                    }
+                };
+
+                let mut results: Vec<Payload> = Vec::new();
+
+                for item_value in elements.into_iter() {
+                    let child_name = format!("splitmap_{}", results.len());
+                    let child_snapshot = self.get_branch_mut(branch_id)?.clone();
+
+                    self.active_branches
+                        .insert(child_name.clone(), child_snapshot);
+                    {
+                        let child_branch = self.get_branch_mut(&child_name)?;
+                        child_branch.arena.insert(
+                            item_name.clone(),
+                            EntropicState::Valid(item_value),
+                        )?;
+                    }
+
+                    for stmt in body {
+                        self.execute_statement(&child_name, stmt)?;
+                    }
+
+                    let yielded = self
+                        .get_branch_mut(&child_name)?
+                        .arena
+                        .peek("yielded")
+                        .map(|p| p.clone());
+                    if let Some(Payload::Array(arr)) = yielded {
+                        results.extend(arr);
+                    }
+
+                    self.terminate_branch(&child_name)?;
+                }
+
+                let branch = self.get_branch_mut(branch_id)?;
+                branch.arena.insert(
+                    "splitmap_results".into(),
+                    EntropicState::Valid(Payload::Array(results)),
+                )?;
+
+                if let Some(_resolver) = reconcile {
+                    // placeholder: resolver semantics can be finalized later
+                }
+            }
+            Statement::Yield(item) => {
+                let branch = self.get_branch_mut(branch_id)?;
+                let value = branch.arena.consume(item)?;
+                match branch.arena.peek("yielded") {
+                    Some(Payload::Array(mut existing)) => {
+                        existing.push(value);
+                        branch.arena.insert(
+                            "yielded".into(),
+                            EntropicState::Valid(Payload::Array(existing)),
+                        )?;
+                    }
+                    _ => {
+                        branch.arena.insert(
+                            "yielded".into(),
+                            EntropicState::Valid(Payload::Array(vec![value])),
+                        )?;
+                    }
+                }
+            }
             Statement::Loop { max_ms, body } => {
                 let branch = self.get_branch_mut(branch_id)?;
+                if *max_ms == 0 {
+                    return Err(TemporalError::InvalidLoopBudget);
+                }
                 branch.loop_depth += 1;
                 let loop_start = branch.local_clock;
                 let mut iterations = 0;
@@ -498,6 +679,13 @@ impl Vm {
                         .insert(name.clone(), EntropicState::Valid(payload));
                 }
                 Ok(Payload::Struct(evaluated_fields))
+            }
+            Expression::ArrayLiteral(elements) => {
+                let mut values = Vec::new();
+                for expr in elements {
+                    values.push(self.evaluate_expression(branch_id, expr)?);
+                }
+                Ok(Payload::Array(values))
             }
             Expression::ChannelReceive(chan_id) => {
                 let chan = self.channels.get_mut(chan_id).ok_or_else(|| {
@@ -762,6 +950,12 @@ impl Vm {
                     ),
                 )
             }
+            Statement::For { pacing_ms, .. } => {
+                let pacing = pacing_ms.unwrap_or(1);
+                pacing
+            }
+            Statement::SplitMap { .. } => 1,
+            Statement::Yield(_) => 0,
             Statement::Loop { max_ms, .. } => *max_ms,
             Statement::Break => 0,
         };

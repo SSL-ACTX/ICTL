@@ -305,6 +305,123 @@ fn parse_statement(
                 reconcile: reconcile_rules,
             }
         }
+        Rule::for_stmt => {
+            let mut inner = pair.into_inner();
+            let item = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mode = inner
+                .next()
+                .map(|p| match p.as_str() {
+                    "consume" => crate::frontend::ast::ForMode::Consume,
+                    _ => crate::frontend::ast::ForMode::Clone,
+                })
+                .unwrap_or(crate::frontend::ast::ForMode::Consume);
+            let source = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+
+            let mut pacing_ms = None;
+            let mut max_ms = None;
+            let mut body = Vec::new();
+
+            for next in inner {
+                match next.as_rule() {
+                    Rule::pacing_opt => {
+                        let amount = next
+                            .into_inner()
+                            .next()
+                            .and_then(|p| p.as_str().parse::<u64>().ok());
+                        pacing_ms = amount;
+                    }
+                    Rule::max_opt => {
+                        let amount = next
+                            .into_inner()
+                            .next_back()
+                            .and_then(|p| p.as_str().parse::<u64>().ok());
+                        max_ms = amount;
+                    }
+                    Rule::statement => {
+                        if let Some(actual_stmt) = next.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Statement::For {
+                item_name: item,
+                mode,
+                source,
+                body,
+                pacing_ms,
+                max_ms,
+            }
+        }
+        Rule::split_map_stmt => {
+            let mut inner = pair.into_inner();
+            let item_name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mode = inner.next().map(|p| p.as_str()).unwrap_or("consume");
+            let source = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mode_enum = if mode == "clone" {
+                crate::frontend::ast::ForMode::Clone
+            } else {
+                crate::frontend::ast::ForMode::Consume
+            };
+
+            let mut body = Vec::new();
+            let mut reconcile = None;
+
+            for next in inner {
+                match next.as_rule() {
+                    Rule::statement => {
+                        if let Some(actual_stmt) = next.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    }
+                    Rule::resolution_rules => {
+                        let mut rules = HashMap::new();
+                        for rule in next.into_inner() {
+                            let mut r_inner = rule.into_inner();
+                            if let (Some(k), Some(v)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let strat = match v.as_str() {
+                                    "first_wins" => crate::frontend::ast::ResolutionStrategy::FirstWins,
+                                    "decay" => crate::frontend::ast::ResolutionStrategy::Decay,
+                                    p if p.starts_with("priority(") => {
+                                        let name = p.trim_start_matches("priority(").trim_end_matches(")");
+                                        crate::frontend::ast::ResolutionStrategy::Priority(name.to_string())
+                                    }
+                                    _ => crate::frontend::ast::ResolutionStrategy::Custom(v.as_str().to_string()),
+                                };
+                                rules.insert(k.as_str().to_string(), strat);
+                            }
+                        }
+                        reconcile =
+                            Some(crate::frontend::ast::MergeResolution { rules });
+                    }
+                    _ => {}
+                }
+            }
+
+            Statement::SplitMap {
+                item_name,
+                mode: mode_enum,
+                source,
+                body,
+                reconcile,
+            }
+        }
         Rule::loop_stmt => {
             let mut inner = pair.into_inner();
             let max_value = inner
@@ -323,6 +440,14 @@ fn parse_statement(
                 max_ms: max_value,
                 body,
             }
+        }
+        Rule::yield_stmt => {
+            let item = pair
+                .into_inner()
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            Statement::Yield(item)
         }
         Rule::reset_stmt => {
             let mut inner = pair.into_inner();
@@ -476,6 +601,13 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression {
                 }
             }
             Expression::StructLit(fields)
+        }
+        Rule::array_lit => {
+            let mut elements = Vec::new();
+            for expr_pair in pair.into_inner() {
+                elements.push(parse_expression(expr_pair));
+            }
+            Expression::ArrayLiteral(elements)
         }
         Rule::field_access => {
             let mut inner = pair.into_inner();

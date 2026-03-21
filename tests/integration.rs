@@ -744,3 +744,52 @@ fn integration_struct_field_access_leads_to_decay() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn integration_for_loop_pacing_and_bounds() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let arr = ["a","b","c"]
+      for x consume arr pacing 5ms (max 20ms) {
+        let y = x
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    assert_eq!(vm.root_timeline.local_clock, 20);
+    Ok(())
+}
+
+#[test]
+fn integration_split_map_collects_yields() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let data = [1,2,3]
+      split_map item consume data {
+        yield item
+      } reconcile (result=first_wins)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let out = vm.root_timeline.arena.peek("splitmap_results");
+    assert!(out.is_some());
+    Ok(())
+}

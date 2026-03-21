@@ -116,6 +116,49 @@ fn lower_statement(stmt: &Statement) -> String {
         } => {
             format!("watchdog {} timeout {}ms", target, timeout_ms)
         }
+        Statement::For {
+            item_name,
+            mode,
+            source,
+            pacing_ms,
+            max_ms,
+            ..
+        } => {
+            let pacing_txt = pacing_ms
+                .map(|p| format!(" pacing {}ms", p))
+                .unwrap_or_default();
+            let max_txt = max_ms
+                .map(|m| format!(" (max {}ms)", m))
+                .unwrap_or_default();
+            format!(
+                "for {} {} {}{}{} {{ ... }}",
+                item_name,
+                match mode {
+                    crate::frontend::ast::ForMode::Consume => "consume",
+                    crate::frontend::ast::ForMode::Clone => "clone",
+                },
+                source,
+                pacing_txt,
+                max_txt
+            )
+        }
+        Statement::SplitMap {
+            item_name,
+            source,
+            reconcile,
+            ..
+        } => {
+            let rec_txt = if reconcile.is_some() {
+                " reconcile { ... }"
+            } else {
+                ""
+            };
+            format!(
+                "split_map {} consume {} {{ ... }}{}",
+                item_name, source, rec_txt
+            )
+        }
+        Statement::Yield(item) => format!("yield {}", item),
         Statement::Loop { max_ms, .. } => {
             format!("loop (max {}ms) {{ ... }}", max_ms)
         }
@@ -143,6 +186,11 @@ fn lower_expression(expr: &Expression) -> String {
             format!("struct {{ {} }}", members.join(", "))
         }
         Expression::ChannelReceive(chan) => format!("chan_recv({})", chan),
+        Expression::ArrayLiteral(elements) => {
+            let parts: Vec<String> =
+                elements.iter().map(|e| lower_expression(e)).collect();
+            format!("[{}]", parts.join(","))
+        }
         Expression::Integer(i) => format!("{}", i),
         Expression::BinaryOp { left, op, right } => {
             let op_str = match op {

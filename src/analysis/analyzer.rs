@@ -16,6 +16,8 @@ pub enum SemanticErrorKind {
     EntropyMismatch(String),
     #[error("Invalid 'loop' budget: max must be >0")]
     InvalidLoopBudget,
+    #[error("Pacing violation: loop body exceeds pacing window")]
+    PacingViolation,
     #[error("Invalid Access: '{0}' is not a structure or has decayed.")]
     InvalidStructuralAccess(String),
     #[error("Capability violation: Required capability '{0}' is not declared in this isolate.")]
@@ -384,6 +386,55 @@ impl EntropicAnalyzer {
                     self.analyze_statement(inner_stmt)?;
                 }
             }
+            Statement::Yield(_) => {
+                // yields are handled by SplitMap gather semantics
+            }
+            Statement::For {
+                item_name: _,
+                mode,
+                source,
+                body,
+                pacing_ms,
+                max_ms,
+            } => {
+                if let crate::frontend::ast::ForMode::Consume = mode {
+                    self.mark_consumed(source)?;
+                }
+
+                if let Some(max) = max_ms {
+                    if *max == 0 {
+                        return Err(
+                            self.annotate(SemanticErrorKind::InvalidLoopBudget)
+                        );
+                    }
+                }
+
+                // Analyze body statements for entropic effects and branch costs.
+                for inner_stmt in body {
+                    self.analyze_statement(inner_stmt)?;
+                }
+
+                if let Some(pacing) = pacing_ms {
+                    let body_cost = body.len() as u64;
+                    if body_cost > *pacing {
+                        return Err(
+                            self.annotate(SemanticErrorKind::PacingViolation)
+                        );
+                    }
+                }
+            }
+            Statement::SplitMap {
+                item_name: _,
+                mode: _,
+                source,
+                body,
+                reconcile: _,
+            } => {
+                self.mark_consumed(source)?;
+                for inner_stmt in body {
+                    self.analyze_statement(inner_stmt)?;
+                }
+            }
             Statement::Anchor(_)
             | Statement::Rewind(_)
             | Statement::ChannelOpen { .. }
@@ -429,8 +480,9 @@ impl EntropicAnalyzer {
             }
             Expression::ChannelReceive(_)
             | Expression::Literal(_)
-            | Expression::Integer(_) => {
-                // Receive creates new state; Literals and integers are constant
+            | Expression::Integer(_)
+            | Expression::ArrayLiteral(_) => {
+                // Receive creates new state; Literals, integers, and arrays are constant
                 Ok(())
             }
             Expression::BinaryOp { left, right, .. } => {
@@ -533,6 +585,11 @@ impl EntropicAnalyzer {
                 format!("struct {{ {} }}", parts.join(", "))
             }
             Expression::ChannelReceive(id) => format!("chan_recv({})", id),
+            Expression::ArrayLiteral(elements) => {
+                let parts: Vec<String> =
+                    elements.iter().map(|e| self.expr_snippet(e)).collect();
+                format!("[{}]", parts.join(","))
+            }
             Expression::Integer(v) => format!("{}", v),
             Expression::BinaryOp { left, op, right } => {
                 let op_str = match op {
