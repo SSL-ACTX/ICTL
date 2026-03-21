@@ -26,6 +26,9 @@ for x clone arr pacing 5ms {
 - Source consumption:
   - `consume`: `arr` is consumed at loop entry; object becomes consumed and cannot be used again.
   - `clone`: `arr` remains valid; each element is copied at clone-time cost.
+- Source types:
+  - `Array`: each item is consumption/clone depending on mode.
+  - `Struct`: fields are iterated as `item` values with key/value structure (`item.key` and `item.value`).
 - Iteration pacing:
   - The body runtime cost is measured in `local_clock` increments.
   - If body cost > `pacing`, runtime returns `PacingViolation`.

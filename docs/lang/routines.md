@@ -27,7 +27,33 @@ routine process_payment(consume auth_token, peek details) taking 25ms {
 ## Timing rules
 
 - `routine ... taking Nms` is a worst-case execution contract.
-- Runtime semantics:
+- `routine ... taking _` is an inferred contract: analyzer computes body cost and sets taking to that value.
+
+### Examples
+
+Explicit timing:
+
+```ictl
+routine f(consume x) taking 15ms {
+  let y = x
+  let z = clone(y)
+}
+
+@0ms: { let result = call f(a) }
+```
+
+Inferred timing (`_`):
+
+```ictl
+routine g(peek p) taking _ {
+  let q = p
+  let r = clone(q)
+}
+
+@0ms: { let result = call g(v) }
+```
+
+Runtime semantics:
   - if body costs < Nms, VM pads to Nms.
   - if body costs > Nms, VM raises `WatchdogBite`.
 - Routine body cannot include `split`, `merge`, or explicit `@...` timeline blocks.

@@ -33,6 +33,43 @@ pub enum Payload {
     Array(Vec<Payload>),
 }
 
+impl std::fmt::Display for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Payload::Integer(i) => write!(f, "{}", i),
+            Payload::String(s) => write!(f, "{}", s),
+            Payload::Struct(fields) => {
+                let mut pairs: Vec<String> = Vec::new();
+                for (k, v) in fields {
+                    let s = match v {
+                        EntropicState::Valid(p) => format!("{}: {}", k, p),
+                        EntropicState::Decayed(map) => {
+                            let fields: Vec<String> = map
+                                .iter()
+                                .map(|(k2, v2)| match v2 {
+                                    EntropicState::Valid(p2) => {
+                                        format!("{}: {}", k2, p2)
+                                    }
+                                    _ => format!("{}: <decayed>", k2),
+                                })
+                                .collect();
+                            format!("{}: {{ {} }}", k, fields.join(", "))
+                        }
+                        EntropicState::Consumed => format!("{}: <consumed>", k),
+                    };
+                    pairs.push(s);
+                }
+                write!(f, "{{{}}}", pairs.join(", "))
+            }
+            Payload::Array(elems) => {
+                let strings: Vec<String> =
+                    elems.iter().map(|e| format!("{}", e)).collect();
+                write!(f, "[{}]", strings.join(", "))
+            }
+        }
+    }
+}
+
 impl Payload {
     /// Deterministic size calculation for ICTL payloads
     pub fn weight(&self) -> u64 {

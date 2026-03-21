@@ -96,6 +96,24 @@ speculate (max 10ms) {
 - `timeout:` is executed if no case becomes ready before `max`.
 - `reconcile` merges branch outputs similarly to `if`.
 
+### `routine` with timing (including `taking _`)
+
+```ictl
+routine async_worker(peek input) taking _ {
+  let copy = clone(input)
+  let res = copy.value
+  yield res
+}
+
+@0ms: {
+  let req = struct { value = "ok" }
+  let response = call async_worker(req)
+}
+```
+
+- `taking Nms` sets an explicit time contract.
+- `taking _` lets analyzer infer the routine body cost.
+
 ### `match entropy`
 
 ```ictl
@@ -151,10 +169,49 @@ for item consume arr pacing 10ms (max 40ms) {
 }
 ```
 
-- `consume`: array is destructively read.
-- `clone`: array remains, clone costs are consumed.
+- `consume`: array/struct is destructively read and each item is consumed.
+- `clone`: array/struct is left intact; each iter item is cloned on access.
 - `pacing`: each iteration takes exactly Nms (body + padding).
 - `max`: enforces total timeline budget when loop completes.
+- Struct source support: `for item consume my_struct { ... }` iterates fields as `{key, value}` items.
+
+### `inspect` and non-destructive read
+
+```ictl
+inspect(raw) {
+  let x = raw.a
+  let y = raw.b
+}
+```
+
+- `inspect(target) { ... }` executes body with non-destructive lookup semantics; it does not consume or decay `target`.
+- Useful for logging/observing without evolving entropic state.
+
+### `print`, `debug`, `log`
+
+```ictl
+print(x)
+debug(x)
+log(x)
+```
+
+- `print(...)` consumes value semantics (as any expression access does).
+- `debug(...)` and `log(...)` are non-consuming observables (peek-style), to avoid entropic side effects.
+
+### `routine` with inferred taking
+
+```ictl
+routine f(peek p) taking _ {
+  let q = p
+}
+```
+
+- `taking _` lets analyzer infer the routine CPU budget based on body cost.
+
+### merge / reconcile updates
+
+- `merge [a,b] into main resolving(x=first_wins)` exists for explicit merge resolution.
+- `select (max 10ms) { ... } reconcile auto` automatically resolves cross-branch outputs when safe.
 
 ### `split_map`
 

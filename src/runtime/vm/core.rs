@@ -213,6 +213,13 @@ impl Vm {
                 target_branch.local_clock = anchor.clock_snapshot;
                 target_branch.commit_horizon_passed = false;
             }
+            Statement::Inspect { target: _, body } => {
+                let original_state = self.get_branch_mut(branch_id)?.clone();
+                for st in body {
+                    self.execute_statement(branch_id, st)?;
+                }
+                self.set_branch_state(branch_id, original_state);
+            }
             Statement::Isolate(block) => {
                 let (capabilities, cpu_req) = {
                     let branch = self.get_branch_mut(branch_id)?;
@@ -254,17 +261,28 @@ impl Vm {
                 taking_ms,
                 body,
             } => {
+                let final_taking_ms =
+                    taking_ms.unwrap_or_else(|| self.estimate_block_cost(body));
                 self.routines.insert(
                     name.clone(),
                     Routine {
                         params: params.clone(),
-                        taking_ms: *taking_ms,
+                        taking_ms: Some(final_taking_ms),
                         body: body.clone(),
                     },
                 );
             }
             Statement::Capability(cap) => {
                 self.execute_capability(branch_id, cap)?;
+            }
+            Statement::Print(expr) => {
+                let payload = self.evaluate_expression(branch_id, expr)?;
+                println!("[ictl] {}", payload);
+            }
+            Statement::Debug(expr) => {
+                let payload =
+                    self.evaluate_expression_nonconsuming(branch_id, expr)?;
+                println!("[ictl-debug] {}", payload);
             }
             Statement::Assignment { target, expr } => {
                 let payload = self.evaluate_expression(branch_id, expr)?;
@@ -510,7 +528,8 @@ impl Vm {
                 if let Some(reconcile_rules) = reconcile {
                     for (var, strat) in &reconcile_rules.rules {
                         match strat {
-                            ResolutionStrategy::FirstWins => {
+                            ResolutionStrategy::FirstWins
+                            | ResolutionStrategy::Auto => {
                                 if let Some(p) = then_state.arena.peek(var) {
                                     final_state.arena.insert(
                                         var.clone(),
@@ -596,9 +615,27 @@ impl Vm {
 
                 let elements = match source_payload {
                     Payload::Array(vec) => vec,
+                    Payload::Struct(fields) => {
+                        let mut items: Vec<Payload> = Vec::new();
+                        for (key, state) in fields {
+                            if let EntropicState::Valid(value) = state {
+                                let mut map = std::collections::HashMap::new();
+                                map.insert(
+                                    "key".to_string(),
+                                    EntropicState::Valid(Payload::String(key)),
+                                );
+                                map.insert(
+                                    "value".to_string(),
+                                    EntropicState::Valid(value),
+                                );
+                                items.push(Payload::Struct(map));
+                            }
+                        }
+                        items
+                    }
                     _ => {
                         return Err(TemporalError::EvalError(
-                            "for-source must be array".into(),
+                            "for-source must be array or struct".into(),
                         ))
                     }
                 };
@@ -827,6 +864,119 @@ impl Vm {
         Ok(())
     }
 
+    pub fn evaluate_expression_nonconsuming(
+        &mut self,
+        branch_id: &str,
+        expr: &Expression,
+    ) -> Result<Payload, TemporalError> {
+        match expr {
+            Expression::Literal(val) => Ok(Payload::String(val.clone())),
+            Expression::Integer(v) => Ok(Payload::Integer(*v)),
+            Expression::Identifier(name) => {
+                let branch = self.get_branch_mut(branch_id)?;
+                let payload = branch.arena.peek(name).ok_or_else(|| {
+                    TemporalError::MemoryFault(MemoryError::AlreadyConsumed)
+                })?;
+                Ok(payload)
+            }
+            Expression::FieldAccess { parent, field } => {
+                let branch = self.get_branch_mut(branch_id)?;
+                let parent_payload = branch.arena.peek(parent).ok_or_else(|| {
+                    TemporalError::MemoryFault(MemoryError::AlreadyConsumed)
+                })?;
+                match parent_payload {
+                    Payload::Struct(ref fields) => match fields.get(field) {
+                        Some(EntropicState::Valid(payload)) => Ok(payload.clone()),
+                        _ => Err(TemporalError::MemoryFault(
+                            MemoryError::AlreadyConsumed,
+                        )),
+                    },
+                    _ => Err(TemporalError::MemoryFault(MemoryError::NotAStruct)),
+                }
+            }
+            Expression::CloneOp(name) => {
+                let branch = self.get_branch_mut(branch_id)?;
+                let payload = branch.arena.peek(name).ok_or_else(|| {
+                    TemporalError::MemoryFault(MemoryError::AlreadyConsumed)
+                })?;
+                let cost = branch.arena.calculate_clone_cost(&payload, 1);
+                branch.consume_budget(cost)?;
+                Ok(payload)
+            }
+            Expression::StructLit(fields) => {
+                let mut evaluated_fields = HashMap::new();
+                for (name, inner_expr) in fields {
+                    let payload = self
+                        .evaluate_expression_nonconsuming(branch_id, inner_expr)?;
+                    evaluated_fields
+                        .insert(name.clone(), EntropicState::Valid(payload));
+                }
+                Ok(Payload::Struct(evaluated_fields))
+            }
+            Expression::ArrayLiteral(elements) => {
+                let mut values = Vec::new();
+                for expr in elements {
+                    values.push(
+                        self.evaluate_expression_nonconsuming(branch_id, expr)?,
+                    );
+                }
+                Ok(Payload::Array(values))
+            }
+            Expression::ChannelReceive(chan_id) => {
+                let chan = self.channels.get_mut(chan_id).ok_or_else(|| {
+                    TemporalError::ChannelFault(format!(
+                        "Channel not found: {}",
+                        chan_id
+                    ))
+                })?;
+                let payload = chan.pop_front().ok_or_else(|| {
+                    TemporalError::ChannelFault(format!(
+                        "Channel empty: {}",
+                        chan_id
+                    ))
+                })?;
+                Ok(payload)
+            }
+            Expression::Call { .. } => self.evaluate_expression(branch_id, expr),
+            Expression::BinaryOp { left, op, right } => {
+                let left = self.evaluate_expression_nonconsuming(branch_id, left)?;
+                let right =
+                    self.evaluate_expression_nonconsuming(branch_id, right)?;
+                // reuse existing numeric behavior by building a dummy expression & re-eval may be easier
+                let l = match left {
+                    Payload::Integer(i) => i,
+                    Payload::String(ref s) => s.parse::<i64>().unwrap_or(0),
+                    _ => 0,
+                };
+                let r = match right {
+                    Payload::Integer(i) => i,
+                    Payload::String(ref s) => s.parse::<i64>().unwrap_or(0),
+                    _ => 0,
+                };
+                let result = match op {
+                    crate::frontend::ast::BinaryOperator::Add => l + r,
+                    crate::frontend::ast::BinaryOperator::Sub => l - r,
+                    crate::frontend::ast::BinaryOperator::Mul => l * r,
+                    crate::frontend::ast::BinaryOperator::Div => {
+                        if r == 0 {
+                            return Err(TemporalError::EvalError(
+                                "Division by zero".into(),
+                            ));
+                        }
+                        l / r
+                    }
+                    crate::frontend::ast::BinaryOperator::Eq => (l == r) as i64,
+                    crate::frontend::ast::BinaryOperator::Neq => (l != r) as i64,
+                    crate::frontend::ast::BinaryOperator::Lt => (l < r) as i64,
+                    crate::frontend::ast::BinaryOperator::Gt => (l > r) as i64,
+                    crate::frontend::ast::BinaryOperator::Le => (l <= r) as i64,
+                    crate::frontend::ast::BinaryOperator::Ge => (l >= r) as i64,
+                };
+                Ok(Payload::Integer(result))
+            }
+        }
+    }
+
     pub fn evaluate_expression(
         &mut self,
         branch_id: &str,
@@ -897,7 +1047,7 @@ impl Vm {
                     })?
                     .clone();
                 let params = routine_def.params.clone();
-                let taking_ms = routine_def.taking_ms;
+                let taking_ms = routine_def.taking_ms.unwrap_or(0);
 
                 if args.len() != params.len() {
                     return Err(TemporalError::EvalError(format!(
@@ -1131,6 +1281,8 @@ impl Vm {
                         );
                         match strategy {
                             ResolutionStrategy::FirstWins => { /* Keep */ }
+                            ResolutionStrategy::Auto => { /* Auto defaults to first-wins */
+                            }
                             ResolutionStrategy::Priority(p) => {
                                 eprintln!(
                                     "priority p={} current={}",
@@ -1257,7 +1409,8 @@ impl Vm {
             | Statement::AcausalReset { .. }
             | Statement::Capability(_)
             | Statement::Assignment { .. }
-            | Statement::Expression(_) => 0,
+            | Statement::Expression(_)
+            | Statement::Print(_) => 0,
             Statement::RelativisticBlock { body, .. } => {
                 self.estimate_block_cost(body)
             }
@@ -1265,6 +1418,7 @@ impl Vm {
             Statement::Watchdog { recovery, .. } => {
                 self.estimate_block_cost(recovery)
             }
+            Statement::Debug(_) => 1,
             Statement::If {
                 then_branch,
                 else_branch,
@@ -1320,8 +1474,9 @@ impl Vm {
             }
             Statement::Collapse => 0,
             Statement::SplitMap { .. } => 1,
+            Statement::Inspect { body, .. } => self.estimate_block_cost(body),
             Statement::Yield(_) => 0,
-            Statement::RoutineDef { taking_ms, .. } => *taking_ms,
+            Statement::RoutineDef { taking_ms, .. } => taking_ms.unwrap_or(0),
             Statement::Loop { max_ms, .. } => *max_ms,
             Statement::SpeculationMode(_) => 0,
             Statement::Break => 0,

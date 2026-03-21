@@ -15,7 +15,7 @@ pub struct AnchorPoint {
 #[derive(Clone)]
 pub struct Routine {
     pub params: Vec<(ParamMode, String)>,
-    pub taking_ms: u64,
+    pub taking_ms: Option<u64>,
     pub body: Vec<crate::frontend::ast::SpannedStatement>,
 }
 

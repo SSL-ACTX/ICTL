@@ -1,0 +1,81 @@
+@0ms: {
+  // 1) Preload a large struct payload and anchor for potential rewind.
+  let raw = struct { a = "fieldA", b = "fieldB", count = "0" }
+
+  // Friendly inspect syntax makes a non-destructive view of raw data.
+  inspect(raw) {
+    let raw_copy = clone(raw)
+    let a_check = raw_copy.a
+    debug(a_check)
+    log(raw.count)
+  }
+
+  print("starting split")
+
+  // 2) Split into two workers for parallel speculative work.
+  split main into [w1, w2]
+}
+
+@w1: {
+  anchor stage1
+  let p = clone(raw)
+
+  // Simulate speculative parse process with commit/fallback.
+  speculate (max 40ms) {
+    anchor speculation_start
+    let first = p.a
+
+    // Reasonable path with a commit at end.
+    commit {
+      let merged = struct { x = first, y = "inferred" }
+      yield merged           // test non-local result capture via call flow
+    }
+
+    collapse                // in this case we do not take fallback; if error occurs, collapse triggers.
+  } fallback {
+    let merged = struct { x = "failed", y = "" }
+    yield merged
+  }
+}
+
+@w2: {
+  anchor stage2
+
+  // Friendly routine syntax with inferred & cheap timing
+  routine inspect_item(peek item) taking _ {
+    let item_copy = clone(item)
+    let _k = item.key
+    let _v = item_copy.value
+  }
+
+  let q = raw
+  for item consume q {
+    let item_copy = clone(item)
+    let key = item.key
+    let value = item_copy.value
+    commit {
+      let result = struct { key = key, value = value }
+      // no actual yielded value to parent; this branch may solely update local state
+    }
+  }
+}
+
+// Merge results back and launch inter-branch channel exchange.
+@0ms: {
+  merge [w1, w2] into main resolving(raw=first_wins)
+
+  open_chan ch1 (3)
+  let hello = "hello"
+  chan_send ch1 (hello)
+  print("merged done")
+
+  select (max 10ms) {
+    case m = chan_recv(ch1): {
+      let out = m
+      // channel item successfully consumed
+    }
+    timeout: {
+      let out = "timeout"
+    }
+  } reconcile auto
+}

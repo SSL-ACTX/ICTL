@@ -116,6 +116,8 @@ fn lower_statement(stmt: &Statement) -> String {
         } => {
             format!("watchdog {} timeout {}ms", target, timeout_ms)
         }
+        Statement::Print(expr) => format!("print({})", lower_expression(expr)),
+        Statement::Debug(expr) => format!("debug({})", lower_expression(expr)),
         Statement::SpeculationMode(mode) => {
             format!("speculation_mode({:?})", mode)
         }
@@ -180,12 +182,16 @@ fn lower_statement(stmt: &Statement) -> String {
                     format!("{} {}", mode_str, name)
                 })
                 .collect();
+            let taking_display = taking_ms.unwrap_or(0);
             format!(
                 "routine {}({}) taking {}ms {{ ... }}",
                 name,
                 params_txt.join(", "),
-                taking_ms
+                taking_display
             )
+        }
+        Statement::Inspect { target, .. } => {
+            format!("inspect({}) {{ ... }}", target)
         }
         Statement::Loop { max_ms, .. } => {
             format!("loop (max {}ms) {{ ... }}", max_ms)

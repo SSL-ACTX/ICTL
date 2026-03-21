@@ -79,7 +79,12 @@ fn main() -> anyhow::Result<()> {
         let program = match frontend::parser::parse_ictl(&source) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("Parser error for {}: {}", path.display(), e);
+                eprintln!(
+                    "error: failed to parse {}\n  --> {}\n      {}",
+                    path.display(),
+                    path.display(),
+                    e
+                );
                 continue;
             }
         };
@@ -103,7 +108,7 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        println!("  Analysis: ok");
+        println!("{}: analysis ok", path.display());
 
         if run_program {
             let mut vm = runtime::vm::Vm::new();
@@ -120,13 +125,16 @@ fn main() -> anyhow::Result<()> {
 
                 for stmt in &timeline.statements {
                     if let Err(e) = vm.execute_statement(branch, stmt) {
-                        eprintln!("Runtime error in {}: {}", path.display(), e);
+                        eprintln!(
+                            "error: runtime failure in {}\n  branch: {}\n  cause: {}",
+                            path.display(), branch, e
+                        );
                         break;
                     }
                 }
             }
 
-            println!("  Run: ok");
+            println!("{}: run ok", path.display());
             println!("  Global clock: {}", vm.global_clock);
             println!("  Main local clock: {}", vm.root_timeline.local_clock);
             println!("  Final arena state:");

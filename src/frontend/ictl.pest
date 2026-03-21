@@ -20,6 +20,9 @@ statement = {
     | merge_stmt
     | split_map_stmt
     | for_stmt
+    | inspect_stmt
+    | print_stmt
+    | debug_stmt
     | anchor_stmt
     | rewind_stmt
     | commit_stmt
@@ -42,17 +45,19 @@ statement = {
     | network_request_stmt
 }
 
+print_stmt = { "print" ~ "(" ~ expression ~ ")" }
+
 speculate_stmt = { "speculate" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ statement* ~ "}" ~ fallback_stmt? }
 fallback_stmt = { "fallback" ~ "{" ~ statement* ~ "}" }
 collapse_stmt = { "collapse" }
 speculation_mode_stmt = { "speculation_mode" ~ "(" ~ speculation_mode_value ~ ")" }
 speculation_mode_value = { "selective" | "full" }
-routine_stmt = { "routine" ~ identifier ~ "(" ~ param_decl_list? ~ ")" ~ "taking" ~ amount ~ "ms" ~ "{" ~ statement* ~ "}" }
+routine_stmt = { "routine" ~ identifier ~ "(" ~ param_decl_list? ~ ")" ~ "taking" ~ (amount ~ "ms" | "_") ~ "{" ~ statement* ~ "}" }
 param_decl_list = { param_decl ~ ("," ~ param_decl)* }
 param_decl = { param_mode ~ identifier }
 param_mode = { "consume" | "clone" | "decay" | "peek" }
 
-select_stmt = { "select" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ select_case* ~ timeout_clause? ~ "}" ~ ("reconcile" ~ "(" ~ resolution_rules ~ ")")? }
+select_stmt = { "select" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ select_case* ~ timeout_clause? ~ "}" ~ reconcile_clause? }
 select_case = { "case" ~ identifier ~ "=" ~ expression ~ ":" ~ statement_block }
 timeout_clause = { "timeout" ~ ":" ~ statement_block }
 
@@ -63,12 +68,15 @@ break_stmt = { "break" }
 
 for_mode = { "consume" | "clone" }
 for_stmt = { "for" ~ identifier ~ for_mode ~ identifier ~ pacing_opt? ~ max_opt? ~ "{" ~ statement* ~ "}" }
+inspect_stmt = { "inspect" ~ "(" ~ identifier ~ ")" ~ "{" ~ statement* ~ "}" }
 split_map_stmt = { "split_map" ~ identifier ~ for_mode ~ identifier ~ "{" ~ statement* ~ "}" ~ "reconcile" ~ "(" ~ resolution_rules ~ ")" }
 
 pacing_opt = { "pacing" ~ amount ~ "ms" }
 max_opt = { "(" ~ "max" ~ amount ~ "ms" ~ ")" }
 
-if_stmt = { "if" ~ "(" ~ expression ~ ")" ~ statement_block ~ ("else" ~ statement_block)? ~ ("reconcile" ~ "(" ~ resolution_rules ~ ")")? }
+debug_stmt = { ("debug" | "log") ~ "(" ~ expression ~ ")" }
+
+if_stmt = { "if" ~ "(" ~ expression ~ ")" ~ statement_block ~ ("else" ~ statement_block)? ~ reconcile_clause? }
 loop_stmt = { "loop" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ statement* ~ "}" }
 
 network_request_stmt = { "network_request" ~ string_literal }
@@ -89,6 +97,7 @@ merge_stmt = { "merge" ~ "[" ~ identifier_list ~ "]" ~ "into" ~ identifier ~ ("r
 identifier_list = { identifier ~ ("," ~ identifier)* }
 resolution_rules = { res_rule ~ ("," ~ res_rule)* }
 res_rule = { identifier ~ "=" ~ identifier }
+reconcile_clause = { "reconcile" ~ ("auto" | "(" ~ resolution_rules ~ ")") }
 
 anchor_stmt = { "anchor" ~ identifier }
 rewind_stmt = { "rewind_to" ~ "(" ~ identifier ~ ")" }

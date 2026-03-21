@@ -118,6 +118,10 @@ pub enum Statement {
         reconcile: Option<MergeResolution>,
     },
     Break,
+    Inspect {
+        target: String,
+        body: Vec<SpannedStatement>,
+    },
     Loop {
         max_ms: u64,
         body: Vec<SpannedStatement>,
@@ -138,10 +142,12 @@ pub enum Statement {
         reconcile: Option<MergeResolution>,
     },
     Yield(String),
+    Print(Expression),
+    Debug(Expression),
     RoutineDef {
         name: String,
         params: Vec<(ParamMode, String)>,
-        taking_ms: u64,
+        taking_ms: Option<u64>,
         body: Vec<SpannedStatement>,
     },
     AcausalReset {
@@ -174,6 +180,7 @@ pub struct Capability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeResolution {
     pub rules: HashMap<String, ResolutionStrategy>,
+    pub auto: bool,
 }
 
 #[allow(dead_code)]
@@ -182,6 +189,7 @@ pub enum ResolutionStrategy {
     FirstWins,
     Priority(String),
     Decay,
+    Auto,
     Custom(String),
 }
 

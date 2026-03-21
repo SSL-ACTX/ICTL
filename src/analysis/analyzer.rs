@@ -45,13 +45,17 @@ impl std::fmt::Display for SemanticError {
             _ => "<unknown>".to_string(),
         };
 
-        write!(f, "error: {}\n --> {}\n  |\n", self.kind, location_prefix)?;
+        write!(f, "error: {}\n  --> {}\n   |\n", self.kind, location_prefix)?;
 
         if let Some(ref stmt) = self.statement {
-            write!(f, "  | {}\n", stmt)?;
+            write!(f, "{:>4} | {}\n", self.line.unwrap_or(0), stmt)?;
+            if let Some(col) = self.column {
+                let marker_line = " ".repeat(col.saturating_sub(1));
+                write!(f, "   | {}^\n", marker_line)?;
+            }
         }
 
-        write!(f, "  |\n  = note: branch '{}'\n", self.branch)?;
+        write!(f, "   |\n   = note: branch '{}'\n", self.branch)?;
 
         Ok(())
     }
@@ -75,6 +79,7 @@ pub struct EntropicAnalyzer {
     current_branch: String,
     current_statement: Option<String>,
     current_span: Option<crate::frontend::ast::Span>,
+    inspection_depth: usize,
     source: Option<String>,
     filename: Option<String>,
     capability_stack: Vec<HashSet<String>>,
@@ -94,6 +99,7 @@ impl EntropicAnalyzer {
             filename: None,
             capability_stack: Vec::new(),
             routines: HashMap::new(),
+            inspection_depth: 0,
         }
     }
 
@@ -257,10 +263,26 @@ impl EntropicAnalyzer {
                     }
                 }
 
-                if !mismatch_vars.is_empty() && reconcile.is_none() {
-                    return Err(self.annotate(SemanticErrorKind::EntropyMismatch(
-                        mismatch_vars.join(", "),
-                    )));
+                if !mismatch_vars.is_empty() {
+                    if let Some(reconcile_rules) = reconcile {
+                        if !reconcile_rules.auto {
+                            for name in &mismatch_vars {
+                                if !reconcile_rules.rules.contains_key(name) {
+                                    return Err(self.annotate(
+                                        SemanticErrorKind::EntropyMismatch(
+                                            mismatch_vars.join(", "),
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        return Err(self.annotate(
+                            SemanticErrorKind::EntropyMismatch(
+                                mismatch_vars.join(", "),
+                            ),
+                        ));
+                    }
                 }
 
                 // Merge contexts conservatively: consumed union and yields union
@@ -280,6 +302,23 @@ impl EntropicAnalyzer {
                 self.branch_contexts = previous_contexts;
                 self.branch_contexts
                     .insert(self.current_branch.clone(), merged_state);
+            }
+            Statement::Inspect { target: _, body } => {
+                // Non-destructive view: preserve parent context after block.
+                let snapshot = self
+                    .branch_contexts
+                    .get(&self.current_branch)
+                    .cloned()
+                    .unwrap_or_default();
+
+                self.inspection_depth += 1;
+                for inner_stmt in body {
+                    self.analyze_statement(inner_stmt)?;
+                }
+                self.inspection_depth -= 1;
+
+                self.branch_contexts
+                    .insert(self.current_branch.clone(), snapshot);
             }
             Statement::Loop { max_ms, body } => {
                 if *max_ms == 0 {
@@ -350,18 +389,23 @@ impl EntropicAnalyzer {
 
                 // Check subroutine timing budget conservatively.
                 let estimated_cost = self.estimate_block_cost(body);
-                if estimated_cost > *taking_ms {
-                    return Err(self.annotate(
-                        SemanticErrorKind::RoutineBudgetExceeded(
-                            name.clone(),
-                            *taking_ms,
-                            estimated_cost,
-                        ),
-                    ));
-                }
+                let final_taking_ms = if let Some(ms) = *taking_ms {
+                    if estimated_cost > ms {
+                        return Err(self.annotate(
+                            SemanticErrorKind::RoutineBudgetExceeded(
+                                name.clone(),
+                                ms,
+                                estimated_cost,
+                            ),
+                        ));
+                    }
+                    ms
+                } else {
+                    estimated_cost
+                };
 
                 self.routines
-                    .insert(name.clone(), (params.clone(), *taking_ms));
+                    .insert(name.clone(), (params.clone(), final_taking_ms));
             }
             Statement::Assignment { target, expr } => {
                 self.analyze_expression(expr)?;
@@ -653,6 +697,9 @@ impl EntropicAnalyzer {
             Statement::Expression(expr) => {
                 self.analyze_expression(expr)?;
             }
+            Statement::Print(expr) | Statement::Debug(expr) => {
+                self.analyze_expression_nonconsuming(expr)?;
+            }
             Statement::Commit(body) => {
                 for inner_stmt in body {
                     self.analyze_statement(inner_stmt)?;
@@ -823,8 +870,13 @@ impl EntropicAnalyzer {
             }
             Expression::Identifier(name) => self.mark_consumed(name),
             Expression::FieldAccess { parent, .. } => {
-                // Structural Decay: Accessing a field consumes the "wholeness" of the parent.
-                self.mark_consumed(parent)
+                // Structural Decay: Accessing a field consumes the "wholeness" of the parent,
+                // unless inside an inspect block.
+                if self.inspection_depth > 0 {
+                    Ok(())
+                } else {
+                    self.mark_consumed(parent)
+                }
             }
             Expression::CloneOp(name) => {
                 let state = self.branch_contexts.get(&self.current_branch).unwrap();
@@ -927,6 +979,7 @@ impl EntropicAnalyzer {
                 self.estimate_block_cost(body)
             }
             Statement::Isolate(block) => self.estimate_block_cost(&block.body),
+            Statement::Inspect { body, .. } => self.estimate_block_cost(body),
             Statement::Watchdog { recovery, .. } => {
                 self.estimate_block_cost(recovery)
             }
@@ -942,6 +995,9 @@ impl EntropicAnalyzer {
                 )
             }
             Statement::For { pacing_ms, .. } => pacing_ms.unwrap_or(1),
+            Statement::Print(expr) | Statement::Debug(expr) => {
+                1 + self.estimate_expression_cost(expr)
+            }
             Statement::Speculate { body, fallback, .. } => {
                 let fallback_cost = self
                     .estimate_block_cost(fallback.as_ref().unwrap_or(&Vec::new()));
@@ -986,7 +1042,7 @@ impl EntropicAnalyzer {
             Statement::Loop { max_ms, .. } => *max_ms,
             Statement::SpeculationMode(_) => 0,
             Statement::Break => 0,
-            Statement::RoutineDef { taking_ms, .. } => *taking_ms,
+            Statement::RoutineDef { taking_ms, .. } => taking_ms.unwrap_or(0),
         };
         base + extra
     }

@@ -132,7 +132,7 @@ fn parse_statement(
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
             let mut params = Vec::new();
-            let mut taking_ms = 0;
+            let mut taking_ms: Option<u64> = None;
             let mut body = Vec::new();
 
             while let Some(current) = inner.next() {
@@ -160,14 +160,18 @@ fn parse_statement(
                         }
                     }
                     Rule::amount => {
-                        taking_ms = current.as_str().parse::<u64>().unwrap_or(0);
+                        taking_ms = current.as_str().parse::<u64>().ok();
                     }
                     Rule::statement => {
                         if let Some(s) = current.into_inner().next() {
                             body.push(parse_statement(s));
                         }
                     }
-                    _ => {}
+                    _ => {
+                        if current.as_str() == "_" {
+                            taking_ms = None;
+                        }
+                    }
                 }
             }
 
@@ -264,7 +268,7 @@ fn parse_statement(
             Statement::Merge {
                 branches,
                 target,
-                resolutions: MergeResolution { rules },
+                resolutions: MergeResolution { rules, auto: false },
             }
         }
         Rule::commit_stmt => {
@@ -404,7 +408,15 @@ fn parse_statement(
                                 rules.insert(k.as_str().to_string(), strat);
                             }
                         }
-                        reconcile = Some(MergeResolution { rules });
+                        reconcile = Some(MergeResolution { rules, auto: false });
+                    }
+                    Rule::reconcile_clause => {
+                        if element.as_str().contains("auto") {
+                            reconcile = Some(MergeResolution {
+                                rules: HashMap::new(),
+                                auto: true,
+                            });
+                        }
                     }
                     _ => {}
                 }
@@ -496,6 +508,22 @@ fn parse_statement(
                 .unwrap_or_default();
             Statement::NetworkRequest { domain }
         }
+        Rule::print_stmt => {
+            let mut inner = pair.into_inner();
+            let expr = inner
+                .next()
+                .map(parse_expression)
+                .unwrap_or(Expression::Literal("".into()));
+            Statement::Print(expr)
+        }
+        Rule::debug_stmt => {
+            let mut inner = pair.into_inner();
+            let expr = inner
+                .next()
+                .map(parse_expression)
+                .unwrap_or(Expression::Literal("".into()));
+            Statement::Debug(expr)
+        }
         Rule::break_stmt => Statement::Break,
         Rule::if_stmt => {
             let mut inner = pair.into_inner();
@@ -525,28 +553,45 @@ fn parse_statement(
             };
             let reconcile_rules = if let Some(reconcile_pair) = inner.next() {
                 let mut rules = HashMap::new();
-                for rule in reconcile_pair.into_inner() {
-                    let mut r_inner = rule.into_inner();
-                    if let (Some(k), Some(v)) = (r_inner.next(), r_inner.next()) {
-                        let value = v.as_str();
-                        let strat = if value == "first_wins" {
-                            ResolutionStrategy::FirstWins
-                        } else if value == "decay" {
-                            ResolutionStrategy::Decay
-                        } else if let Some(inner) = value.strip_prefix("priority(") {
-                            if let Some(branch_name) = inner.strip_suffix(")") {
-                                ResolutionStrategy::Priority(branch_name.to_string())
-                            } else {
-                                ResolutionStrategy::Custom(value.to_string())
+                let mut is_auto = false;
+                for child in reconcile_pair.into_inner() {
+                    if child.as_rule() == Rule::resolution_rules {
+                        for rule in child.into_inner() {
+                            let mut r_inner = rule.into_inner();
+                            if let (Some(k), Some(v)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let value = v.as_str();
+                                let strat = if value == "first_wins" {
+                                    ResolutionStrategy::FirstWins
+                                } else if value == "decay" {
+                                    ResolutionStrategy::Decay
+                                } else if let Some(inner) =
+                                    value.strip_prefix("priority(")
+                                {
+                                    if let Some(branch_name) =
+                                        inner.strip_suffix(")")
+                                    {
+                                        ResolutionStrategy::Priority(
+                                            branch_name.to_string(),
+                                        )
+                                    } else {
+                                        ResolutionStrategy::Custom(value.to_string())
+                                    }
+                                } else {
+                                    ResolutionStrategy::Priority(value.to_string())
+                                };
+                                rules.insert(k.as_str().to_string(), strat);
                             }
-                        } else {
-                            // direct branch name as priority for merge compatibility
-                            ResolutionStrategy::Priority(value.to_string())
-                        };
-                        rules.insert(k.as_str().to_string(), strat);
+                        }
+                    } else if child.as_str() == "auto" {
+                        is_auto = true;
                     }
                 }
-                Some(MergeResolution { rules })
+                Some(MergeResolution {
+                    rules,
+                    auto: is_auto,
+                })
             } else {
                 None
             };
@@ -557,6 +602,20 @@ fn parse_statement(
                 else_branch,
                 reconcile: reconcile_rules,
             }
+        }
+        Rule::inspect_stmt => {
+            let mut inner = pair.into_inner();
+            let target = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut body = Vec::new();
+            for stmt in inner {
+                if let Some(actual_stmt) = stmt.into_inner().next() {
+                    body.push(parse_statement(actual_stmt));
+                }
+            }
+            Statement::Inspect { target, body }
         }
         Rule::for_stmt => {
             let mut inner = pair.into_inner();
@@ -660,8 +719,10 @@ fn parse_statement(
                                 rules.insert(k.as_str().to_string(), strat);
                             }
                         }
-                        reconcile =
-                            Some(crate::frontend::ast::MergeResolution { rules });
+                        reconcile = Some(crate::frontend::ast::MergeResolution {
+                            rules,
+                            auto: false,
+                        });
                     }
                     _ => {}
                 }

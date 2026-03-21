@@ -9,6 +9,8 @@ ICTL tracks value state explicitly:
 - `clone` in analysis maps to clone cost and unique copy semantics.
 - `set_consumed` is used for reconciliation on paranetic operations.
 - field access (e.g., `a.b`) causes structural decay in parent, meaning parent is now partially consumed (decayed). Direct parent reuse may be rejected.
+- `inspect(target) { ... }` and `debug(x)` / `log(x)` are non-consuming observables (read-only). They do not change `target` state or field decay.
+- `print(x)` is consuming, following normal entropic evaluation semantics.
 
 ## Timeline and time model
 

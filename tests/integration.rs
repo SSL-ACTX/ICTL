@@ -85,6 +85,86 @@ fn integration_if_statement_integer_arith() -> anyhow::Result<()> {
 }
 
 #[test]
+fn integration_inspect_block_does_not_consume() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let p = struct { a = "x", b = "y" }
+      inspect(p) {
+        let x = p.a
+        let y = p.b
+      }
+      let z = p
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let z = vm.root_timeline.arena.peek("z");
+    assert!(z.is_some());
+    Ok(())
+}
+
+#[test]
+fn integration_if_reconcile_auto() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let v = 1
+      if (v > 0) {
+        let x = 5
+      } else {
+        let x = 10
+      } reconcile auto
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let x_val = vm.root_timeline.arena.peek("x");
+    assert!(x_val.is_some());
+    Ok(())
+}
+
+#[test]
+fn integration_routine_taking_inferred() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      routine f(peek p) taking _ {
+        let q = p
+      }
+      let s = "ok"
+      let r = call f(s)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let r_val = vm.root_timeline.arena.peek("r");
+    assert!(matches!(r_val, Some(Payload::String(_))));
+    Ok(())
+}
+
+#[test]
 fn integration_if_equalizes_timing() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {
@@ -692,6 +772,29 @@ fn integration_network_request_syntax_parse_and_execute() -> anyhow::Result<()> 
 }
 
 #[test]
+fn integration_for_struct_iteration_source() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let raw = struct { a = "1", b = "2" }
+      for item consume raw {
+        let item_copy = clone(item)
+        let key = item.key
+        let value = item_copy.value
+        let produced = struct { key = key, value = value }
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    vm.execute_statement("main", &program.timelines[0].statements[0])?;
+    Ok(())
+}
+
+#[test]
 fn integration_relativistic_network_request_merge() -> anyhow::Result<()> {
     let source = r#"
     @0ms: { split main into [a,b] }
@@ -758,6 +861,70 @@ fn integration_file_input_pipeline() -> anyhow::Result<()> {
 
     assert!(vm.root_timeline.arena.peek("x").is_some());
 
+    Ok(())
+}
+
+#[test]
+fn integration_print_statement() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let msg = "hello"
+      print(msg)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for timeline in &program.timelines {
+        let branch = match &timeline.time {
+            ictl::frontend::ast::TimeCoordinate::Global(_) => "main",
+            ictl::frontend::ast::TimeCoordinate::Relative(_) => "main",
+            ictl::frontend::ast::TimeCoordinate::Branch(name) => name.as_str(),
+        };
+        for stmt in &timeline.statements {
+            vm.execute_statement(branch, stmt)?;
+        }
+    }
+
+    // After print, msg has been consumed by expression semantics
+    assert!(vm.root_timeline.arena.peek("msg").is_none());
+
+    Ok(())
+}
+
+#[test]
+fn integration_debug_log_non_consuming() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let v = "hello"
+      debug(v)
+      log(v)
+      let x = clone(v)
+      let y = clone(x)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for timeline in &program.timelines {
+        let branch = match &timeline.time {
+            ictl::frontend::ast::TimeCoordinate::Global(_) => "main",
+            ictl::frontend::ast::TimeCoordinate::Relative(_) => "main",
+            ictl::frontend::ast::TimeCoordinate::Branch(name) => name.as_str(),
+        };
+        for stmt in &timeline.statements {
+            vm.execute_statement(branch, stmt)?;
+        }
+    }
+
+    // v must survive debug/log and be cloneable
+    assert!(vm.root_timeline.arena.peek("x").is_some());
     Ok(())
 }
 
