@@ -780,10 +780,8 @@ impl EntropicAnalyzer {
                     )));
                 }
                 for (arg_expr, (mode, _param_name)) in args.iter().zip(params.iter()) {
-                    // Evaluate arg expression for nested entropic effects where relevant.
-                    if !matches!(mode, crate::frontend::ast::ParamMode::Consume | crate::frontend::ast::ParamMode::Decay) {
-                        self.analyze_expression(arg_expr)?;
-                    }
+                    // Evaluate nested expression side effects (calls, operators) without moving simple identifier refs.
+                    self.analyze_expression_nonconsuming(arg_expr)?;
 
                     match mode {
                         crate::frontend::ast::ParamMode::Consume => {
@@ -853,6 +851,44 @@ impl EntropicAnalyzer {
             Expression::BinaryOp { left, right, .. } => {
                 self.analyze_expression(left)?;
                 self.analyze_expression(right)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn analyze_expression_nonconsuming(
+        &mut self,
+        expr: &Expression,
+    ) -> Result<(), SemanticError> {
+        match expr {
+            Expression::Call { .. } => self.analyze_expression(expr),
+            Expression::Identifier(_) => Ok(()),
+            Expression::FieldAccess { .. } => Ok(()),
+            Expression::CloneOp(name) => {
+                let state = self.branch_contexts.get(&self.current_branch).unwrap();
+                if state.consumed.contains(name) {
+                    return Err(self.annotate(SemanticErrorKind::UseAfterConsume(
+                        name.clone(),
+                    )));
+                }
+                Ok(())
+            }
+            Expression::StructLit(fields) => {
+                for (_, inner_expr) in fields {
+                    self.analyze_expression_nonconsuming(inner_expr)?;
+                }
+                Ok(())
+            }
+            Expression::ArrayLiteral(elements) => {
+                for inner_expr in elements {
+                    self.analyze_expression_nonconsuming(inner_expr)?;
+                }
+                Ok(())
+            }
+            Expression::ChannelReceive(_) | Expression::Literal(_) | Expression::Integer(_) => Ok(()),
+            Expression::BinaryOp { left, right, .. } => {
+                self.analyze_expression_nonconsuming(left)?;
+                self.analyze_expression_nonconsuming(right)?;
                 Ok(())
             }
         }

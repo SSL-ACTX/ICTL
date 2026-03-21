@@ -988,74 +988,66 @@ impl Vm {
                     )));
                 }
 
-                let (param_values, caller_capacity, caller_entropy_mode) = {
+                let (mut param_values, caller_capacity, caller_entropy_mode) = {
                     let caller_branch_inner = self.get_branch_mut(branch_id)?;
 
-                    let param_values: Result<Vec<Payload>, TemporalError> = args
-                        .iter()
-                        .zip(params.iter())
-                        .map(|(arg_expr, (mode, _param_name))| {
-                            match mode {
+                    let mut values: Vec<Option<Payload>> = Vec::new();
+
+                    for (arg_expr, (mode, _param_name)) in args.iter().zip(params.iter()) {
+                        if let Expression::Identifier(var) = arg_expr {
+                            let result = match mode {
                                 ParamMode::Consume => {
-                                    if let Expression::Identifier(var) = arg_expr {
-                                        let v = caller_branch_inner.arena.consume(var)?;
-                                        Ok(v)
-                                    } else {
-                                        Err(TemporalError::EvalError(
-                                            "consume param must be identifier".into(),
-                                        ))
-                                    }
+                                    let v = caller_branch_inner.arena.consume(var)?;
+                                    Some(v)
                                 }
                                 ParamMode::Clone => {
-                                    if let Expression::Identifier(var) = arg_expr {
-                                        let v = caller_branch_inner
-                                            .arena
-                                            .peek(var)
-                                            .ok_or(MemoryError::AlreadyConsumed)?;
-                                        Ok(v)
-                                    } else {
-                                        Err(TemporalError::EvalError(
-                                            "clone param must be identifier".into(),
-                                        ))
-                                    }
+                                    let v = caller_branch_inner
+                                        .arena
+                                        .peek(var)
+                                        .ok_or(MemoryError::AlreadyConsumed)?;
+                                    Some(v)
                                 }
                                 ParamMode::Decay => {
-                                    if let Expression::Identifier(var) = arg_expr {
-                                        let v = caller_branch_inner
-                                            .arena
-                                            .peek(var)
-                                            .ok_or(MemoryError::AlreadyConsumed)?;
-                                        caller_branch_inner.arena.decay(var)?;
-                                        Ok(v)
-                                    } else {
-                                        Err(TemporalError::EvalError(
-                                            "decay param must be identifier".into(),
-                                        ))
-                                    }
+                                    let v = caller_branch_inner
+                                        .arena
+                                        .peek(var)
+                                        .ok_or(MemoryError::AlreadyConsumed)?;
+                                    caller_branch_inner.arena.decay(var)?;
+                                    Some(v)
                                 }
                                 ParamMode::Peek => {
-                                    if let Expression::Identifier(var) = arg_expr {
-                                        let v = caller_branch_inner
-                                            .arena
-                                            .peek(var)
-                                            .ok_or(MemoryError::AlreadyConsumed)?;
-                                        Ok(v)
-                                    } else {
-                                        Err(TemporalError::EvalError(
-                                            "peek param must be identifier".into(),
-                                        ))
-                                    }
+                                    let v = caller_branch_inner
+                                        .arena
+                                        .peek(var)
+                                        .ok_or(MemoryError::AlreadyConsumed)?;
+                                    Some(v)
                                 }
-                            }
-                        })
-                        .collect();
+                            };
+                            values.push(result);
+                        } else {
+                            values.push(None);
+                        }
+                    }
 
                     (
-                        param_values?,
+                        values,
                         caller_branch_inner.arena.capacity,
                         caller_branch_inner.entropy_mode,
                     )
                 };
+
+                // Evaluate non-identifier argument expressions now that caller borrow is released.
+                for (i, (arg_expr, _)) in args.iter().zip(params.iter()).enumerate() {
+                    if param_values[i].is_none() {
+                        let v = self.evaluate_expression(branch_id, arg_expr)?;
+                        param_values[i] = Some(v);
+                    }
+                }
+
+                let param_values: Vec<Payload> = param_values
+                    .into_iter()
+                    .map(|opt| opt.expect("param value must exist"))
+                    .collect();
 
                 // Create isolated routine execution timeline
                 let child_id = format!("__routine_{}_{}", taking_ms, self.global_clock);

@@ -1,25 +1,20 @@
 @0ms: {
-  open_chan c(2)
-  let payload = "hello"
-  chan_send c(payload)
-
-  select (max 10ms) {
-    case data = chan_recv(c): {
-      let selected = struct { value = data }
-      let tag = "selected"
-    }
-    timeout: {
-      let selected = struct { value = "timeout" }
-      let tag = "timeout"
-    }
-  } reconcile (selected=first_wins, tag=first_wins)
-
-  match entropy(selected) {
-    Valid(s):
-      let final = s.value
-    Decayed(s):
-      let final = "decayed"
-    Consumed:
-      let final = "missing"
+  // Routine contract example (consume, peek, clone)
+  routine create_payload(consume base, peek suffix) taking 15ms {
+    let str = base
+    let combined = struct { x = str, y = suffix }
+    yield combined
   }
+
+  // Nested routine (outer calls inner) to test recursive contract accounting
+  routine process_flow(peek head) taking 40ms {
+    let part = call create_payload(head, "-ok")
+    yield part
+  }
+
+  let a = "hello"
+  let result = call process_flow(a)
+
+  // Validate that original 'a' is left valid when peeked
+  let check = a
 }
