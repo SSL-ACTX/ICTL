@@ -53,3 +53,15 @@ pub struct Timeline {
     pub break_requested: bool,
     pub loop_depth: u32,
 }
+
+impl Timeline {
+    /// Drop any anchor snapshots for this timeline when commit horizon is passed.
+    pub fn clear_anchor_snapshots(&mut self) {
+        self.anchors.clear();
+    }
+
+    /// Clear the timeline arena and release all tracked resources.
+    pub fn clear_arena(&mut self) {
+        self.arena.clear();
+    }
+}

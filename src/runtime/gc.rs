@@ -10,10 +10,15 @@ pub struct GarbageCollector;
 
 impl GarbageCollector {
     /// Reclaim a completed or terminated timeline branch.
-    pub fn collect_branch(branch: Timeline) {
-        // Branch will be dropped when this function returns.
-        // We keep this explicit for semantic clarity in the VM path.
+    pub fn collect_branch(mut branch: Timeline) {
+        branch.clear_anchor_snapshots();
+        branch.clear_arena();
         drop(branch);
+    }
+
+    /// Reclaim anchor snapshots when timeline crosses commit horizon.
+    pub fn collect_commit_anchors(branch: &mut Timeline) {
+        branch.clear_anchor_snapshots();
     }
 
     /// Reclaim a branch from the VM and remove it from active set.

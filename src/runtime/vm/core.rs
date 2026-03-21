@@ -330,8 +330,9 @@ impl Vm {
                 }
 
                 let branch = self.get_branch_mut(branch_id)?;
-                branch.anchors.clear();
                 branch.commit_horizon_passed = true;
+                crate::runtime::gc::GarbageCollector::collect_commit_anchors(branch);
+                branch.arena.compact_consumed();
             }
             Statement::Send {
                 value_id,

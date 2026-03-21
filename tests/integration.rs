@@ -1,7 +1,27 @@
 use ictl::analysis::analyzer::EntropicAnalyzer;
 use ictl::frontend::parser;
-use ictl::runtime::memory::Payload;
+use ictl::runtime::memory::{Arena, EntropicState, Payload};
 use ictl::runtime::vm::{TemporalError, Vm};
+
+#[test]
+fn integration_arena_insert_overwrite_reclaims_previous_memory() {
+    let mut arena = Arena::new(10);
+    assert!(arena
+        .insert(
+            "x".to_string(),
+            EntropicState::Valid(Payload::String("abc".into()))
+        )
+        .is_ok());
+    assert_eq!(arena.used, 3);
+
+    assert!(arena
+        .insert(
+            "x".to_string(),
+            EntropicState::Valid(Payload::String("abcdefgh".into()))
+        )
+        .is_ok());
+    assert_eq!(arena.used, 8);
+}
 
 #[test]
 fn integration_parse_analyze_execute_timeline() -> anyhow::Result<()> {
@@ -843,6 +863,44 @@ fn integration_commit_then_rewind_fails() -> anyhow::Result<()> {
 
     let res = vm.execute_statement("w", &program.timelines[1].statements[3]);
     assert!(res.is_err(), "rewind should fail after commit horizon");
+
+    let w_after_commit = vm.active_branches.get("w").unwrap();
+    assert!(
+        w_after_commit.anchors.is_empty(),
+        "anchors must be cleared after commit"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn integration_commit_clears_anchor_snapshots() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      split main into [w]
+    }
+    @w: {
+      anchor start
+      let x = "once"
+      commit {
+        let y = "two"
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    vm.execute_statement("main", &program.timelines[0].statements[0])?;
+    vm.execute_statement("w", &program.timelines[1].statements[0])?; // anchor
+    vm.execute_statement("w", &program.timelines[1].statements[1])?; // let x
+    vm.execute_statement("w", &program.timelines[1].statements[2])?; // commit
+
+    let w = vm.active_branches.get("w").unwrap();
+    assert!(w.anchors.is_empty());
+    assert!(w.commit_horizon_passed);
 
     Ok(())
 }

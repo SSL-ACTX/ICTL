@@ -87,9 +87,22 @@ impl Arena {
         identifier: String,
         state: EntropicState,
     ) -> Result<(), MemoryError> {
+        // Subtract previous value if it was Valid, to support rebinding/updating
+        if let Some(previous) = self.bindings.get(&identifier) {
+            if let EntropicState::Valid(prev_payload) = previous {
+                self.used = self.used.saturating_sub(prev_payload.weight());
+            }
+        }
+
         if let EntropicState::Valid(ref p) = state {
             let weight = p.weight();
             if self.used + weight > self.capacity {
+                // Restore previous weight on failure
+                if let Some(previous) = self.bindings.get(&identifier) {
+                    if let EntropicState::Valid(prev_payload) = previous {
+                        self.used += prev_payload.weight();
+                    }
+                }
                 return Err(MemoryError::OutOfMemory(
                     weight,
                     self.capacity - self.used,
@@ -97,8 +110,21 @@ impl Arena {
             }
             self.used += weight;
         }
+
         self.bindings.insert(identifier, state);
         Ok(())
+    }
+
+    /// Drop all arena state immediately for deterministic bulk deallocation.
+    pub fn clear(&mut self) {
+        self.bindings.clear();
+        self.used = 0;
+    }
+
+    /// Optionally compact consumed entries at branch boundaries.
+    pub fn compact_consumed(&mut self) {
+        self.bindings
+            .retain(|_, v| !matches!(v, EntropicState::Consumed));
     }
 
     /// Destructive read of a whole identifier.
