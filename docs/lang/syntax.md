@@ -51,6 +51,29 @@ A timeline block defines an execution context at a time coordinate.
 
 ## 3. Control flow
 
+### `speculate` / `fallback` / `collapse`
+
+```ictl
+speculation_mode(selective)
+speculate (max 10ms) {
+  // speculative operations (move/consume,
+  // clones, channel ops, etc.)
+  let x = "hello"
+  commit {
+    let out = x
+  }
+} fallback {
+  let out = "default"
+}
+```
+
+- `speculation_mode(selective|full)` sets commit behavior for later speculative blocks (default `selective`).
+- `speculate` creates a micro-timeline and does not affect parent unless commit succeeds.
+- On `collapse` (or timeout) the speculative arena is discarded and fallback executes.
+- On commit success, one can run in either:
+  - `Selective` (default): only explicit commit values move up
+  - `Full`: entire speculative child state merges into parent (configured with VM option).
+
 ### `if` statement
 
 ```ictl

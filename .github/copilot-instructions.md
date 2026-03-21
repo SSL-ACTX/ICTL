@@ -37,7 +37,7 @@ The repo is small and self-contained; aim to preserve trust in the existing sema
 
 ## Documentation links
 - README: https://github.com/SSL-ACTX/ictl/blob/main/README.md
-- RFCs: `docs/RFC.md` for spec/math and evolution notes
+- RFCs: `docs/rfc/RFC.md` for spec/math and evolution notes
 - Always check RFC (if available) when implementing syntax or semantics changes.
 - Do not introduce syntax or behavior that diverges from the RFC without a documented design proposal and team alignment.
 

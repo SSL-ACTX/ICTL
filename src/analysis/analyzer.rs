@@ -378,6 +378,9 @@ impl EntropicAnalyzer {
             Statement::Break => {
                 // break only affects runtime loop flow, no semantic entropic change
             }
+            Statement::SpeculationMode(_) => {
+                // language-level mode settings affect runtime configuration only
+            }
             Statement::Expression(expr) => {
                 self.analyze_expression(expr)?;
             }
@@ -422,6 +425,30 @@ impl EntropicAnalyzer {
                         );
                     }
                 }
+            }
+            Statement::Speculate {
+                max_ms: _,
+                body,
+                fallback,
+            } => {
+                let context_snapshot = self.branch_contexts.clone();
+
+                for stmt in body {
+                    self.analyze_statement(stmt)?;
+                }
+
+                self.branch_contexts = context_snapshot.clone();
+
+                if let Some(fallback_body) = fallback {
+                    for stmt in fallback_body {
+                        self.analyze_statement(stmt)?;
+                    }
+                }
+
+                self.branch_contexts = context_snapshot;
+            }
+            Statement::Collapse => {
+                // collapse is control flow only, no entropic change here
             }
             Statement::SplitMap {
                 item_name: _,
@@ -523,6 +550,7 @@ impl EntropicAnalyzer {
             Statement::Anchor(name) => format!("anchor {}", name),
             Statement::Rewind(name) => format!("rewind_to({})", name),
             Statement::Commit(_) => "commit { ... }".to_string(),
+            Statement::SpeculationMode(_) => "speculation_mode(...)".to_string(),
             Statement::Send {
                 value_id,
                 target_branch,
@@ -564,6 +592,10 @@ impl EntropicAnalyzer {
             Statement::Loop { max_ms, .. } => {
                 format!("loop (max {}ms) {{ ... }}", max_ms)
             }
+            Statement::Speculate { max_ms, .. } => {
+                format!("speculate (max {}ms) {{ ... }}", max_ms)
+            }
+            Statement::Collapse => "collapse".to_string(),
             Statement::Break => "break".to_string(),
             _ => format!("{:?}", stmt),
         }

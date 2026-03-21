@@ -223,6 +223,55 @@ fn parse_statement(
             }
             Statement::Commit(body)
         }
+        Rule::speculate_stmt => {
+            let mut inner = pair.into_inner();
+            let max_ms = inner
+                .next()
+                .and_then(|p| p.as_str().parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut body = Vec::new();
+            let mut fallback = None;
+
+            for element in inner {
+                match element.as_rule() {
+                    Rule::statement => {
+                        if let Some(actual_stmt) = element.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    }
+                    Rule::fallback_stmt => {
+                        let mut fb = Vec::new();
+                        for stmt_pair in element.into_inner() {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
+                                fb.push(parse_statement(actual_stmt));
+                            }
+                        }
+                        fallback = Some(fb);
+                    }
+                    _ => {}
+                }
+            }
+
+            Statement::Speculate {
+                max_ms,
+                body,
+                fallback,
+            }
+        }
+        Rule::collapse_stmt => Statement::Collapse,
+        Rule::speculation_mode_stmt => {
+            let mode_str = pair
+                .into_inner()
+                .next()
+                .map(|p| p.as_str())
+                .unwrap_or("selective");
+            let mode = match mode_str {
+                "full" => crate::frontend::ast::SpeculationCommitMode::Full,
+                _ => crate::frontend::ast::SpeculationCommitMode::Selective,
+            };
+            Statement::SpeculationMode(mode)
+        }
         Rule::anchor_stmt => Statement::Anchor(
             pair.into_inner()
                 .next()

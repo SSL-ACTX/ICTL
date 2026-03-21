@@ -90,6 +90,155 @@ fn integration_if_equalizes_timing() -> anyhow::Result<()> {
 }
 
 #[test]
+fn integration_speculate_commit_fallback_timing() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let x = "hello"
+      speculate (max 3ms) {
+        let y = x
+        commit {
+          let out = y
+        }
+      } fallback {
+        let out = "fallback"
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let out_val = vm.root_timeline.arena.peek("out");
+    match out_val {
+        Some(Payload::String(s)) => assert_eq!(s, "hello"),
+        _ => panic!("Expected out=hello"),
+    }
+
+    assert_eq!(vm.root_timeline.local_clock, 7);
+    // 1 for initial let x, 1 for speculate statement overhead, max 3ms speculation budget, plus 1 fallback cost estimate
+    Ok(())
+}
+
+#[test]
+fn integration_speculate_runs_fallback_on_collapse() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      speculate (max 3ms) {
+        collapse
+      } fallback {
+        let out = "fallback"
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let out_val = vm.root_timeline.arena.peek("out");
+    match out_val {
+        Some(Payload::String(s)) => assert_eq!(s, "fallback"),
+        _ => panic!("Expected out=fallback"),
+    }
+
+    assert_eq!(vm.root_timeline.local_clock, 6);
+    // 1 for speculate statement overhead, max 3ms speculation budget, fallback body cost 1
+    Ok(())
+}
+
+#[test]
+fn integration_speculate_commit_scoped_variables() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      speculation_mode(full)
+      speculate (max 3ms) {
+        let secret = "hidden"
+        commit {
+          let out = "committed"
+        }
+      } fallback {
+        let out = "fallback"
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let out_val = vm.root_timeline.arena.peek("out");
+    match out_val {
+        Some(Payload::String(s)) => assert_eq!(s, "committed"),
+        _ => panic!("Expected out=committed"),
+    }
+
+    let secret_val = vm.root_timeline.arena.peek("secret");
+    match secret_val {
+        Some(Payload::String(s)) => assert_eq!(s, "hidden"),
+        _ => panic!("Expected secret=hidden in full speculative commit semantics"),
+    }
+
+    assert_eq!(vm.root_timeline.local_clock, 7);
+    // cost: mode statement + speculate statement overhead + max 3ms + fallback cost 1
+    Ok(())
+}
+
+#[test]
+fn integration_speculate_selective_commit_mode() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      speculation_mode(selective)
+      speculate (max 3ms) {
+        let secret = "hidden"
+        commit {
+          let out = "committed"
+        }
+      } fallback {
+        let out = "fallback"
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    vm.set_speculative_commit_mode(
+        ictl::frontend::ast::SpeculationCommitMode::Selective,
+    );
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let out_val = vm.root_timeline.arena.peek("out");
+    match out_val {
+        Some(Payload::String(s)) => assert_eq!(s, "committed"),
+        _ => panic!("Expected out=committed"),
+    }
+
+    assert!(vm.root_timeline.arena.peek("secret").is_none());
+    assert_eq!(vm.root_timeline.local_clock, 7);
+    Ok(())
+}
+
+#[test]
 fn integration_loop_break_pads_to_max() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {

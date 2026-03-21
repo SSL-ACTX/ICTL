@@ -22,6 +22,9 @@ statement = {
     | anchor_stmt
     | rewind_stmt
     | commit_stmt
+    | speculate_stmt
+    | collapse_stmt
+    | speculation_mode_stmt
     | if_stmt
     | break_stmt
     | loop_stmt
@@ -35,6 +38,12 @@ statement = {
     | reset_stmt
     | network_request_stmt
 }
+
+speculate_stmt = { "speculate" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ statement* ~ "}" ~ fallback_stmt? }
+fallback_stmt = { "fallback" ~ "{" ~ statement* ~ "}" }
+collapse_stmt = { "collapse" }
+speculation_mode_stmt = { "speculation_mode" ~ "(" ~ speculation_mode_value ~ ")" }
+speculation_mode_value = { "selective" | "full" }
 
 break_stmt = { "break" }
 

@@ -1,16 +1,23 @@
 @0ms: {
-  open_chan c(2)
-  split main into [worker]
-  @main: {
-    let greeting = "hello"
-    chan_send c(greeting)
+  speculation_mode(selective)
+  speculate (max 50ms) {
+    let secret = "hidden"
+    commit {
+      let final = "committed"
+    }
+  } fallback {
+    let final = "default"
   }
 }
 
-@worker: {
-  anchor start
-  let received = chan_recv(c)
-  commit {
-    let done = "done"
+@60ms: {
+  speculation_mode(full)
+  speculate (max 50ms) {
+    let secret = "hidden"
+    commit {
+      let final = "committed"
+    }
+  } fallback {
+    let final = "default"
   }
 }

@@ -35,8 +35,9 @@
 * **Watchdogs & Anchors:** Monitors can reset failing branches to prior anchors (acausal resets) to dynamically recover temporal computations.
 * **Paced Iteration (`for` + `split_map`):** New iteration primitives support explicit entropic collection semantics, deterministic timing via `pacing`, and scatter-gather parallel execution with `split_map`.
 * **Conditional Branching (`if` / `else`):** Explicit path reconciliation is required when branches consume shared values.
+* **Speculative Branching (`speculate` / `fallback` / `collapse`):** Optimize safe trial computations with rollback and explicit commit controls; can be configured via `speculation_mode(selective|full)`.
 
-> See [docs/docs.md](docs/docs.md) for language docs and pages (iteration, split_map, if/else, syntax, semantics).
+> See [docs/docs.md](docs/docs.md) for language docs and pages (iteration, split_map, if/else, speculations, syntax, semantics).
 
 ---
 

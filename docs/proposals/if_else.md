@@ -65,7 +65,7 @@ loop (max 50ms) {
     // The entire block is locked to 6ms (5ms Network + 1ms overhead)
     if (check) {
         let result = NetworkRequest(domain="ictl.org") // 5ms
-        consume(data) 
+        let _ = data // consume data in this branch by expression read
     } else {
         let result = "local_cache" // 1ms
         // VM adds 4ms padding here automatically

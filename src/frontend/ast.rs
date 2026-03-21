@@ -37,6 +37,12 @@ pub enum EntropyMode {
     Chaos,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeculationCommitMode {
+    Selective,
+    Full,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
@@ -86,6 +92,13 @@ pub enum Statement {
         timeout_ms: u64,
         recovery: Vec<SpannedStatement>,
     },
+    Speculate {
+        max_ms: u64,
+        body: Vec<SpannedStatement>,
+        fallback: Option<Vec<SpannedStatement>>,
+    },
+    Collapse,
+    SpeculationMode(SpeculationCommitMode),
     If {
         condition: Expression,
         then_branch: Vec<SpannedStatement>,

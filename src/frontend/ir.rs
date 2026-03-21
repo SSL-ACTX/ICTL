@@ -116,6 +116,9 @@ fn lower_statement(stmt: &Statement) -> String {
         } => {
             format!("watchdog {} timeout {}ms", target, timeout_ms)
         }
+        Statement::SpeculationMode(mode) => {
+            format!("speculation_mode({:?})", mode)
+        }
         Statement::For {
             item_name,
             mode,
@@ -162,6 +165,10 @@ fn lower_statement(stmt: &Statement) -> String {
         Statement::Loop { max_ms, .. } => {
             format!("loop (max {}ms) {{ ... }}", max_ms)
         }
+        Statement::Speculate { max_ms, .. } => {
+            format!("speculate (max {}ms) {{ ... }}", max_ms)
+        }
+        Statement::Collapse => "collapse".to_string(),
         Statement::Break => "break".to_string(),
         Statement::AcausalReset {
             target,

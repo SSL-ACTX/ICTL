@@ -1,7 +1,7 @@
 // src/runtime/vm.rs
 use crate::frontend::ast::{
     Capability, EntropyMode, Expression, MergeResolution, ResolutionStrategy,
-    Statement, TimeCoordinate,
+    SpeculationCommitMode, Statement, TimeCoordinate,
 };
 use crate::runtime::gc::GarbageCollector;
 use crate::runtime::memory::{Arena, EntropicState, MemoryError, Payload};
@@ -50,14 +50,26 @@ pub enum TemporalError {
     PacingViolation,
     #[error("Invalid loop budget: max must be >0")]
     InvalidLoopBudget,
+    #[error("Speculation collapsed or failed")]
+    SpeculationCollapsed,
+}
+
+#[derive(Default)]
+struct SpeculationContext {
+    commit_vars: std::collections::HashSet<String>,
+    in_commit_block: bool,
+    commit_executed: bool,
+    collapse_happened: bool,
 }
 
 pub struct Vm {
+    pub speculative_commit_mode: SpeculationCommitMode,
     pub global_clock: u64,
     pub root_timeline: Timeline,
     pub active_branches: HashMap<String, Timeline>,
     pub capability_handlers: HashMap<String, CapHandler>,
     pub channels: HashMap<String, VecDeque<Payload>>,
+    speculation_stack: Vec<SpeculationContext>,
 }
 
 #[derive(Clone)]
@@ -84,7 +96,14 @@ impl Vm {
             active_branches: HashMap::new(),
             capability_handlers: HashMap::new(),
             channels: HashMap::new(),
+            speculation_stack: Vec::new(),
+            speculative_commit_mode: SpeculationCommitMode::Selective,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn set_speculative_commit_mode(&mut self, mode: SpeculationCommitMode) {
+        self.speculative_commit_mode = mode;
     }
 
     #[allow(dead_code)]
@@ -141,12 +160,112 @@ impl Vm {
                     ));
                 }
             }
+            Statement::Speculate {
+                max_ms,
+                body,
+                fallback,
+            } => {
+                let original_branch = self.get_branch_mut(branch_id)?.clone();
+                let original_channels = self.channels.clone();
+                let fallback_cost = self
+                    .estimate_block_cost(fallback.as_ref().unwrap_or(&Vec::new()));
+
+                let mut speculative_error: Option<TemporalError> = None;
+
+                self.speculation_stack.push(SpeculationContext::default());
+                self.set_branch_state(branch_id, original_branch.clone());
+                self.channels = original_channels.clone();
+
+                for stmt in body {
+                    if let Err(err) = self.execute_statement(branch_id, stmt) {
+                        speculative_error = Some(err);
+                        break;
+                    }
+
+                    let current_clock = self.get_branch_mut(branch_id)?.local_clock;
+                    if current_clock.saturating_sub(original_branch.local_clock)
+                        > *max_ms
+                    {
+                        speculative_error = Some(TemporalError::WatchdogBite(
+                            branch_id.to_string(),
+                            *max_ms,
+                        ));
+                        break;
+                    }
+                }
+
+                let speculative_branch_snapshot =
+                    self.get_branch_mut(branch_id)?.clone();
+
+                let speculation_context = self
+                    .speculation_stack
+                    .pop()
+                    .expect("speculation stack underflow");
+
+                let commit_valid = speculative_error.is_none()
+                    && speculation_context.commit_executed
+                    && !speculation_context.collapse_happened;
+
+                // Restore base state before applying either commit or fallback
+                self.set_branch_state(branch_id, original_branch.clone());
+                self.channels = original_channels.clone();
+
+                if commit_valid {
+                    match self.speculative_commit_mode {
+                        SpeculationCommitMode::Full => {
+                            self.set_branch_state(
+                                branch_id,
+                                speculative_branch_snapshot,
+                            );
+                        }
+                        SpeculationCommitMode::Selective => {
+                            let branch = self.get_branch_mut(branch_id)?;
+                            for var in speculation_context.commit_vars.iter() {
+                                if let Some(payload) =
+                                    speculative_branch_snapshot.arena.peek(var)
+                                {
+                                    branch.arena.insert(
+                                        var.clone(),
+                                        EntropicState::Valid(payload),
+                                    )?;
+                                } else {
+                                    branch.arena.set_consumed(var)?;
+                                }
+                            }
+                        }
+                    }
+                    let branch = self.get_branch_mut(branch_id)?;
+                    branch.commit_horizon_passed = true;
+                } else if let Some(fallback_body) = fallback {
+                    for stmt in fallback_body {
+                        self.execute_statement(branch_id, stmt)?;
+                    }
+                }
+
+                let branch = self.get_branch_mut(branch_id)?;
+                let target_clock =
+                    original_branch.local_clock + 1 + *max_ms + fallback_cost;
+                if branch.local_clock < target_clock {
+                    let padding = target_clock - branch.local_clock;
+                    branch.local_clock += padding;
+                    branch.consume_budget(padding)?;
+                }
+            }
+            Statement::Collapse => {
+                if let Some(ctx) = self.speculation_stack.last_mut() {
+                    ctx.collapse_happened = true;
+                }
+                return Err(TemporalError::SpeculationCollapsed);
+            }
             Statement::Break => {
                 let branch = self.get_branch_mut(branch_id)?;
                 if branch.loop_depth == 0 {
                     return Err(TemporalError::InvalidBreak);
                 }
                 branch.break_requested = true;
+            }
+            Statement::SpeculationMode(mode) => {
+                self.speculative_commit_mode = *mode;
             }
             Statement::AcausalReset {
                 target,
@@ -210,6 +329,11 @@ impl Vm {
             }
             Statement::Assignment { target, expr } => {
                 let payload = self.evaluate_expression(branch_id, expr)?;
+                if let Some(ctx) = self.speculation_stack.last_mut() {
+                    if ctx.in_commit_block {
+                        ctx.commit_vars.insert(target.clone());
+                    }
+                }
                 let branch = self.get_branch_mut(branch_id)?;
                 branch
                     .arena
@@ -253,9 +377,19 @@ impl Vm {
                 branch.arena = anchor.arena_snapshot.clone();
             }
             Statement::Commit(body) => {
+                if let Some(ctx) = self.speculation_stack.last_mut() {
+                    ctx.commit_executed = true;
+                    ctx.in_commit_block = true;
+                }
+
                 for inner_stmt in body {
                     self.execute_statement(branch_id, inner_stmt)?;
                 }
+
+                if let Some(ctx) = self.speculation_stack.last_mut() {
+                    ctx.in_commit_block = false;
+                }
+
                 let branch = self.get_branch_mut(branch_id)?;
                 branch.anchors.clear();
                 branch.commit_horizon_passed = true;
@@ -954,9 +1088,17 @@ impl Vm {
                 let pacing = pacing_ms.unwrap_or(1);
                 pacing
             }
+            Statement::Speculate { body, fallback, .. } => {
+                let fallback_cost = self
+                    .estimate_block_cost(fallback.as_ref().unwrap_or(&Vec::new()));
+                let body_cost = self.estimate_block_cost(body);
+                1 + body_cost + fallback_cost
+            }
+            Statement::Collapse => 0,
             Statement::SplitMap { .. } => 1,
             Statement::Yield(_) => 0,
             Statement::Loop { max_ms, .. } => *max_ms,
+            Statement::SpeculationMode(_) => 0,
             Statement::Break => 0,
         };
         base + extra

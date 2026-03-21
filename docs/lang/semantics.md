@@ -33,6 +33,15 @@ ICTL tracks value state explicitly:
 - `rewind_to` resets timeline to anchor state (with chaos guard).
 - `watchdog` monitors and executes recovery block on timeout then returns error `WatchdogBite`.
 
+## Speculation (`speculate` / `fallback` / `collapse`)
+
+- `speculate (max Nms) { ... } fallback { ... }` creates a temporary micro-timeline.
+- `speculation_mode(selective|full)` sets how successful speculative commits are merged (`selective` default).
+- Speculative body runs isolated using cloned arena and local_clock.
+- `commit` inside speculative body marks success; `collapse` or exceeded max causes failure and fallback.
+- On success, the parent branch can merge full child state or selective commit fields depending on runtime mode (`SpeculationCommitMode`).
+- VM time is padded to `max Nms + fallback_wcet` for deterministic cost.
+
 ## Notes for implementers
 
 - Analyzer static rules in `src/analysis/analyzer.rs` check cross-branch consumptive consistency.

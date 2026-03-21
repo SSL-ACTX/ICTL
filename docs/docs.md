@@ -9,6 +9,7 @@ This is the top-level language documentation landing page.
 - [Syntax reference](lang/syntax.md)
 - [Paced iteration / split_map](lang/iter_split_map.md)
 - [Conditional reconciliation (`if` / `else`)](lang/if_else.md)
+- [Speculative branches (`speculate` / `fallback` / `collapse`)](lang/speculative_branches.md)
 
 ## How to use
 
