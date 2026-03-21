@@ -360,6 +360,139 @@ fn integration_loop_break_pads_to_max() -> anyhow::Result<()> {
 }
 
 #[test]
+fn integration_routine_call_contract_and_entropy() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let token = "secure_abc123"
+      let tx = struct { amount = "100", currency = "USD" }
+      routine process_payment(consume auth_token, peek transaction_details) taking 25ms {
+        let amt = transaction_details.amount
+        yield amt
+      }
+      let result = call process_payment(token, tx)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let result_value = vm.root_timeline.arena.peek("result");
+    match result_value {
+        Some(Payload::String(v)) => assert_eq!(v, "100"),
+        _ => panic!("Expected result=\"100\"") ,
+    }
+
+    assert!(vm.root_timeline.arena.peek("token").is_none());
+    assert!(vm.root_timeline.arena.peek("tx").is_some());
+    assert_eq!(vm.root_timeline.local_clock, 28);
+    Ok(())
+}
+
+#[test]
+fn integration_routine_exceeds_taking_fails_analyzer() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      routine too_slow() taking 1ms {
+        network_request "api.example.com"
+        let x = "ok"
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err());
+    Ok(())
+}
+
+#[test]
+fn integration_routine_nested_contract_fails_analyzer() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      routine inner() taking 10ms {
+        let x = "hello"
+      }
+      routine outer() taking 5ms {
+        let y = call inner()
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err());
+    Ok(())
+}
+
+#[test]
+fn integration_routine_split_merge_in_body_fails_analyzer() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      routine invalid() taking 10ms {
+        split main into [worker]
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err());
+    Ok(())
+}
+
+#[test]
+fn integration_routine_consume_non_identifier_fails_analyzer() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      routine fn(consume token) taking 5ms {
+        yield token
+      }
+      let result = call fn("not_var", "x")
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err());
+    Ok(())
+}
+
+#[test]
+fn integration_routine_yield_array_struct_return() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      routine make_res() taking 20ms {
+        let a = [1,2,3]
+        let s = struct { x = "hello", y = "world" }
+        yield a
+        yield s
+      }
+      let result1 = call make_res()
+      let result2 = call make_res()
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    assert!(vm.root_timeline.arena.peek("result1").is_some());
+    assert!(vm.root_timeline.arena.peek("result2").is_some());
+    Ok(())
+}
+
+#[test]
 fn integration_if_requires_reconcile_for_crosspath_consume() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {

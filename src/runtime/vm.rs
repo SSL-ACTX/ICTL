@@ -1,6 +1,6 @@
 // src/runtime/vm.rs
 use crate::frontend::ast::{
-    Capability, EntropyMode, Expression, MergeResolution, ResolutionStrategy,
+    Capability, EntropyMode, Expression, MergeResolution, ParamMode, ResolutionStrategy,
     SpeculationCommitMode, Statement, TimeCoordinate,
 };
 use crate::runtime::gc::GarbageCollector;
@@ -16,6 +16,13 @@ pub struct AnchorPoint {
     pub name: String,
     pub clock_snapshot: u64,
     pub arena_snapshot: Arena,
+}
+
+#[derive(Clone)]
+pub struct Routine {
+    pub params: Vec<(ParamMode, String)>,
+    pub taking_ms: u64,
+    pub body: Vec<crate::frontend::ast::SpannedStatement>,
 }
 
 #[derive(Debug, Error)]
@@ -69,6 +76,7 @@ pub struct Vm {
     pub active_branches: HashMap<String, Timeline>,
     pub capability_handlers: HashMap<String, CapHandler>,
     pub channels: HashMap<String, VecDeque<Payload>>,
+    pub routines: HashMap<String, Routine>,
     speculation_stack: Vec<SpeculationContext>,
 }
 
@@ -96,6 +104,7 @@ impl Vm {
             active_branches: HashMap::new(),
             capability_handlers: HashMap::new(),
             channels: HashMap::new(),
+            routines: HashMap::new(),
             speculation_stack: Vec::new(),
             speculative_commit_mode: SpeculationCommitMode::Selective,
         }
@@ -323,6 +332,21 @@ impl Vm {
 
                 let branch = self.get_branch_mut(branch_id)?;
                 branch.manifest_stack.pop();
+            }
+            Statement::RoutineDef {
+                name,
+                params,
+                taking_ms,
+                body,
+            } => {
+                self.routines.insert(
+                    name.clone(),
+                    Routine {
+                        params: params.clone(),
+                        taking_ms: *taking_ms,
+                        body: body.clone(),
+                    },
+                );
             }
             Statement::Capability(cap) => {
                 self.execute_capability(branch_id, cap)?;
@@ -945,6 +969,145 @@ impl Vm {
                 })?;
                 Ok(payload)
             }
+            Expression::Call { routine, args } => {
+                let routine_def = self
+                    .routines
+                    .get(routine)
+                    .ok_or_else(|| {
+                        TemporalError::EvalError(format!("unknown routine {}", routine))
+                    })?
+                    .clone();
+                let params = routine_def.params.clone();
+                let taking_ms = routine_def.taking_ms;
+
+                if args.len() != params.len() {
+                    return Err(TemporalError::EvalError(format!(
+                        "routine call expects {} args, got {}",
+                        params.len(),
+                        args.len()
+                    )));
+                }
+
+                let (param_values, caller_capacity, caller_entropy_mode) = {
+                    let caller_branch_inner = self.get_branch_mut(branch_id)?;
+
+                    let param_values: Result<Vec<Payload>, TemporalError> = args
+                        .iter()
+                        .zip(params.iter())
+                        .map(|(arg_expr, (mode, _param_name))| {
+                            match mode {
+                                ParamMode::Consume => {
+                                    if let Expression::Identifier(var) = arg_expr {
+                                        let v = caller_branch_inner.arena.consume(var)?;
+                                        Ok(v)
+                                    } else {
+                                        Err(TemporalError::EvalError(
+                                            "consume param must be identifier".into(),
+                                        ))
+                                    }
+                                }
+                                ParamMode::Clone => {
+                                    if let Expression::Identifier(var) = arg_expr {
+                                        let v = caller_branch_inner
+                                            .arena
+                                            .peek(var)
+                                            .ok_or(MemoryError::AlreadyConsumed)?;
+                                        Ok(v)
+                                    } else {
+                                        Err(TemporalError::EvalError(
+                                            "clone param must be identifier".into(),
+                                        ))
+                                    }
+                                }
+                                ParamMode::Decay => {
+                                    if let Expression::Identifier(var) = arg_expr {
+                                        let v = caller_branch_inner
+                                            .arena
+                                            .peek(var)
+                                            .ok_or(MemoryError::AlreadyConsumed)?;
+                                        caller_branch_inner.arena.decay(var)?;
+                                        Ok(v)
+                                    } else {
+                                        Err(TemporalError::EvalError(
+                                            "decay param must be identifier".into(),
+                                        ))
+                                    }
+                                }
+                                ParamMode::Peek => {
+                                    if let Expression::Identifier(var) = arg_expr {
+                                        let v = caller_branch_inner
+                                            .arena
+                                            .peek(var)
+                                            .ok_or(MemoryError::AlreadyConsumed)?;
+                                        Ok(v)
+                                    } else {
+                                        Err(TemporalError::EvalError(
+                                            "peek param must be identifier".into(),
+                                        ))
+                                    }
+                                }
+                            }
+                        })
+                        .collect();
+
+                    (
+                        param_values?,
+                        caller_branch_inner.arena.capacity,
+                        caller_branch_inner.entropy_mode,
+                    )
+                };
+
+                // Create isolated routine execution timeline
+                let child_id = format!("__routine_{}_{}", taking_ms, self.global_clock);
+                let mut child = Timeline::new(child_id.clone(), caller_capacity, self.global_clock);
+                child.entropy_mode = caller_entropy_mode;
+
+                for ((_, param_name), val) in params.iter().zip(param_values) {
+                    child
+                        .arena
+                        .insert(param_name.clone(), EntropicState::Valid(val))?;
+                }
+
+                self.active_branches.insert(child_id.clone(), child);
+
+                // No routine body branching allowed by analyzer; execute safely.
+                for stmt in &routine_def.body {
+                    self.execute_statement(&child_id, stmt)?;
+                }
+
+                let child_branch = self
+                    .active_branches
+                    .remove(&child_id)
+                    .ok_or_else(|| TemporalError::BranchNotFound(child_id.clone()))?;
+
+                if child_branch.local_clock > taking_ms {
+                    return Err(TemporalError::WatchdogBite(
+                        child_id.clone(),
+                        taking_ms,
+                    ));
+                }
+
+                let call_charge = taking_ms.saturating_sub(1);
+                let caller_branch = self.get_branch_mut(branch_id)?;
+                if call_charge > 0 {
+                    caller_branch.local_clock += call_charge;
+                    caller_branch.consume_budget(call_charge)?;
+                }
+
+                // Return first yielded value or void
+                let result = match child_branch.arena.peek("yielded") {
+                    Some(Payload::Array(mut arr)) => {
+                        if !arr.is_empty() {
+                            arr.remove(0)
+                        } else {
+                            Payload::String("void".to_string())
+                        }
+                    }
+                    _ => Payload::String("void".to_string()),
+                };
+
+                Ok(result)
+            }
             Expression::Integer(v) => Ok(Payload::Integer(*v)),
             Expression::BinaryOp { left, op, right } => {
                 let left_value = self.evaluate_expression(branch_id, left)?;
@@ -1238,6 +1401,7 @@ impl Vm {
             Statement::Collapse => 0,
             Statement::SplitMap { .. } => 1,
             Statement::Yield(_) => 0,
+            Statement::RoutineDef { taking_ms, .. } => *taking_ms,
             Statement::Loop { max_ms, .. } => *max_ms,
             Statement::SpeculationMode(_) => 0,
             Statement::Break => 0,

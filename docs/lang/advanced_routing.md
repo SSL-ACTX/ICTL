@@ -31,7 +31,7 @@ This page documents the advanced routing control flow constructs in ICTL.
 - The final local branch is reconciled by `reconcile(...)`.
 - The total cost is fixed to `1 + max(case_wcet, timeout_wcet)` (including base overhead) with explicit padding.
 
-## 2. `match entropy` (State-Based Routing)
+## 3. `match entropy` (State-Based Routing)
 
 `match entropy(x)` routes based on `x`’s entropic state (valid, decayed, consumed).
 

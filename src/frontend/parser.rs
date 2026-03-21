@@ -125,6 +125,54 @@ fn parse_statement(
                 body,
             })
         }
+        Rule::routine_stmt => {
+            let mut inner = pair.into_inner();
+            let name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut params = Vec::new();
+            let mut taking_ms = 0;
+            let mut body = Vec::new();
+
+            while let Some(current) = inner.next() {
+                match current.as_rule() {
+                    Rule::param_decl_list => {
+                        for p in current.into_inner() {
+                            let mut decl = p.into_inner();
+                            if let (Some(mode), Some(param_name)) = (
+                                decl.next(),
+                                decl.next(),
+                            ) {
+                                let mode = match mode.as_str() {
+                                    "consume" => crate::frontend::ast::ParamMode::Consume,
+                                    "clone" => crate::frontend::ast::ParamMode::Clone,
+                                    "decay" => crate::frontend::ast::ParamMode::Decay,
+                                    _ => crate::frontend::ast::ParamMode::Peek,
+                                };
+                                params.push((mode, param_name.as_str().to_string()));
+                            }
+                        }
+                    }
+                    Rule::amount => {
+                        taking_ms = current.as_str().parse::<u64>().unwrap_or(0);
+                    }
+                    Rule::statement => {
+                        if let Some(s) = current.into_inner().next() {
+                            body.push(parse_statement(s));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Statement::RoutineDef {
+                name,
+                params,
+                taking_ms,
+                body,
+            }
+        }
         Rule::require_decl => Statement::Capability(parse_capability(pair)),
         Rule::assignment_stmt => {
             let mut inner = pair.into_inner();
@@ -771,10 +819,25 @@ fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression {
             let inner = pair.into_inner().next().unwrap();
             parse_expression(inner)
         }
+        Rule::call_expr => {
+            let mut inner = pair.into_inner();
+            let routine = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut args = Vec::new();
+            if let Some(expr_list) = inner.next() {
+                for e in expr_list.into_inner() {
+                    args.push(parse_expression(e));
+                }
+            }
+            Expression::Call { routine, args }
+        }
         Rule::integer_literal => {
             Expression::Integer(pair.as_str().parse::<i64>().unwrap_or(0))
         }
         Rule::string_literal => Expression::Literal(pair.as_str().replace("\"", "")),
+
         Rule::identifier_expr | Rule::identifier => {
             Expression::Identifier(pair.as_str().to_string())
         }

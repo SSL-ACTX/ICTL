@@ -16,6 +16,7 @@ statement_block = { "{" ~ statement* ~ "}" | statement }
 statement = {
     isolate_stmt
     | split_stmt
+    | routine_stmt
     | merge_stmt
     | split_map_stmt
     | for_stmt
@@ -46,6 +47,10 @@ fallback_stmt = { "fallback" ~ "{" ~ statement* ~ "}" }
 collapse_stmt = { "collapse" }
 speculation_mode_stmt = { "speculation_mode" ~ "(" ~ speculation_mode_value ~ ")" }
 speculation_mode_value = { "selective" | "full" }
+routine_stmt = { "routine" ~ identifier ~ "(" ~ param_decl_list? ~ ")" ~ "taking" ~ amount ~ "ms" ~ "{" ~ statement* ~ "}" }
+param_decl_list = { param_decl ~ ("," ~ param_decl)* }
+param_decl = { param_mode ~ identifier }
+param_mode = { "consume" | "clone" | "decay" | "peek" }
 
 select_stmt = { "select" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ select_case* ~ timeout_clause? ~ "}" ~ ("reconcile" ~ "(" ~ resolution_rules ~ ")")? }
 select_case = { "case" ~ identifier ~ "=" ~ expression ~ ":" ~ statement_block }
@@ -105,7 +110,9 @@ relational_expr = {
 additive_expr = { multiplicative_expr ~ (("+" | "-") ~ multiplicative_expr)* }
 multiplicative_expr = { unary_expr ~ (("*" | "/") ~ unary_expr)* }
 unary_expr = { "-" ~ unary_expr | primary_expr }
-primary_expr = { chan_recv_expr | struct_lit | array_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
+primary_expr = { call_expr | chan_recv_expr | struct_lit | array_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
+call_expr = { "call" ~ identifier ~ "(" ~ expression_list? ~ ")" }
+expression_list = { expression ~ ("," ~ expression)* }
 
 array_lit = { "[" ~ expression ~ ("," ~ expression)* ~ "]" }
 

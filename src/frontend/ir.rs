@@ -162,6 +162,31 @@ fn lower_statement(stmt: &Statement) -> String {
             )
         }
         Statement::Yield(item) => format!("yield {}", item),
+        Statement::RoutineDef {
+            name,
+            params,
+            taking_ms,
+            ..
+        } => {
+            let params_txt: Vec<String> = params
+                .iter()
+                .map(|(mode, name)| {
+                    let mode_str = match mode {
+                        crate::frontend::ast::ParamMode::Consume => "consume",
+                        crate::frontend::ast::ParamMode::Clone => "clone",
+                        crate::frontend::ast::ParamMode::Decay => "decay",
+                        crate::frontend::ast::ParamMode::Peek => "peek",
+                    };
+                    format!("{} {}", mode_str, name)
+                })
+                .collect();
+            format!(
+                "routine {}({}) taking {}ms {{ ... }}",
+                name,
+                params_txt.join(", "),
+                taking_ms
+            )
+        }
         Statement::Loop { max_ms, .. } => {
             format!("loop (max {}ms) {{ ... }}", max_ms)
         }
@@ -205,6 +230,10 @@ fn lower_expression(expr: &Expression) -> String {
             format!("[{}]", parts.join(","))
         }
         Expression::Integer(i) => format!("{}", i),
+        Expression::Call { routine, args } => {
+            let args_str: Vec<String> = args.iter().map(|arg| lower_expression(arg)).collect();
+            format!("call {}({})", routine, args_str.join(", "))
+        }
         Expression::BinaryOp { left, op, right } => {
             let op_str = match op {
                 crate::frontend::ast::BinaryOperator::Add => "+",

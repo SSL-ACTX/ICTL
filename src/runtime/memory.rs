@@ -196,6 +196,29 @@ impl Arena {
         }
     }
 
+    pub fn decay(&mut self, identifier: &str) -> Result<(), MemoryError> {
+        match self.bindings.remove(identifier) {
+            Some(EntropicState::Valid(Payload::Struct(fields))) => {
+                self.bindings.insert(
+                    identifier.to_string(),
+                    EntropicState::Decayed(fields),
+                );
+                Ok(())
+            }
+            Some(EntropicState::Valid(_)) => {
+                self.bindings
+                    .insert(identifier.to_string(), EntropicState::Consumed);
+                Err(MemoryError::NotAStruct)
+            }
+            Some(EntropicState::Decayed(fields)) => {
+                self.bindings
+                    .insert(identifier.to_string(), EntropicState::Decayed(fields));
+                Ok(())
+            }
+            _ => Err(MemoryError::AlreadyConsumed),
+        }
+    }
+
     /// Calculates the CPU and Memory overhead for cloning data.
     pub fn calculate_clone_cost(&self, payload: &Payload, depth: u32) -> u64 {
         let base_overhead = 10;

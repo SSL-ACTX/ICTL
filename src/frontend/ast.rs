@@ -138,6 +138,12 @@ pub enum Statement {
         reconcile: Option<MergeResolution>,
     },
     Yield(String),
+    RoutineDef {
+        name: String,
+        params: Vec<(ParamMode, String)>,
+        taking_ms: u64,
+        body: Vec<SpannedStatement>,
+    },
     AcausalReset {
         target: String,
         anchor_name: String,
@@ -193,7 +199,19 @@ pub enum ForMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParamMode {
+    Consume,
+    Clone,
+    Decay,
+    Peek,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expression {
+    Call {
+        routine: String,
+        args: Vec<Expression>,
+    },
     Literal(String),
     Identifier(String),
     FieldAccess {

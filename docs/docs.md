@@ -11,6 +11,7 @@ This is the top-level language documentation landing page.
 - [Conditional reconciliation (`if` / `else`)](lang/if_else.md)
 - [Speculative branches (`speculate` / `fallback` / `collapse`)](lang/speculative_branches.md)
 - [Advanced routing (`select` / `match entropy`)](lang/advanced_routing.md)
+- [Routines (`routine` / `call`)](lang/routines.md)
 
 ## How to use
 

@@ -16,6 +16,8 @@ pub enum SemanticErrorKind {
     EntropyMismatch(String),
     #[error("Invalid 'loop' budget: max must be >0")]
     InvalidLoopBudget,
+    #[error("Routine temporal contract violated: {0} requires {1}ms but body costs {2}ms")]
+    RoutineBudgetExceeded(String, u64, u64),
     #[error("Pacing violation: loop body exceeds pacing window")]
     PacingViolation,
     #[error("Invalid Access: '{0}' is not a structure or has decayed.")]
@@ -76,6 +78,7 @@ pub struct EntropicAnalyzer {
     source: Option<String>,
     filename: Option<String>,
     capability_stack: Vec<HashSet<String>>,
+    routines: HashMap<String, (Vec<(crate::frontend::ast::ParamMode, String)>, u64)>,
 }
 
 impl EntropicAnalyzer {
@@ -90,6 +93,7 @@ impl EntropicAnalyzer {
             source: None,
             filename: None,
             capability_stack: Vec::new(),
+            routines: HashMap::new(),
         }
     }
 
@@ -297,6 +301,72 @@ impl EntropicAnalyzer {
                 }
 
                 self.capability_stack.pop();
+            }
+            Statement::RoutineDef {
+                name,
+                params,
+                taking_ms,
+                body,
+            } => {
+                // Ensure unique routine name
+                if self.routines.contains_key(name) {
+                    return Err(self.annotate(
+                        SemanticErrorKind::EntropyMismatch(format!(
+                            "duplicate routine {}",
+                            name
+                        )),
+                    ));
+                }
+
+                // Analyze routine body in isolated context with parameter definitions
+                let mut routine_analyzer = EntropicAnalyzer::new();
+                routine_analyzer.routines = self.routines.clone();
+
+                // Enforce runtime spec constraints inside routines:
+                // no split/merge and no explicit timeline coord blocks.
+                for stmt in body {
+                    match &stmt.stmt {
+                        Statement::Split { .. }
+                        | Statement::Merge { .. }
+                        | Statement::RelativisticBlock { .. } => {
+                            return Err(self.annotate(
+                                SemanticErrorKind::EntropyMismatch(
+                                    "routines cannot contain split/merge/relativistic blocks"
+                                        .to_string(),
+                                ),
+                            ))
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Mark parameters as locally produced values for the routine body.
+                let routine_state = routine_analyzer
+                    .branch_contexts
+                    .get_mut("main")
+                    .unwrap();
+                for (_mode, param_name) in params {
+                    routine_state.yields.insert(param_name.clone());
+                }
+
+                for stmt in body {
+                    routine_analyzer.analyze_statement(stmt)?;
+                }
+
+                // Check subroutine timing budget conservatively.
+                let estimated_cost = self.estimate_block_cost(body);
+                if estimated_cost > *taking_ms {
+                    return Err(self.annotate(
+                        SemanticErrorKind::RoutineBudgetExceeded(
+                            name.clone(),
+                            *taking_ms,
+                            estimated_cost,
+                        ),
+                    ));
+                }
+
+                self.routines
+                    .insert(name.clone(), (params.clone(), *taking_ms));
             }
             Statement::Assignment { target, expr } => {
                 self.analyze_expression(expr)?;
@@ -689,6 +759,70 @@ impl EntropicAnalyzer {
         expr: &Expression,
     ) -> Result<(), SemanticError> {
         match expr {
+            Expression::Call { routine, args } => {
+                let (params, _taking_ms) = self
+                    .routines
+                    .get(routine)
+                    .ok_or_else(|| {
+                        self.annotate(SemanticErrorKind::EntropyMismatch(
+                            format!("unknown routine {}", routine),
+                        ))
+                    })?
+                    .clone();
+                if args.len() != params.len() {
+                    return Err(self.annotate(SemanticErrorKind::EntropyMismatch(
+                        format!(
+                            "routine {} expects {} args, got {}",
+                            routine,
+                            params.len(),
+                            args.len()
+                        ),
+                    )));
+                }
+                for (arg_expr, (mode, _param_name)) in args.iter().zip(params.iter()) {
+                    // Evaluate arg expression for nested entropic effects where relevant.
+                    if !matches!(mode, crate::frontend::ast::ParamMode::Consume | crate::frontend::ast::ParamMode::Decay) {
+                        self.analyze_expression(arg_expr)?;
+                    }
+
+                    match mode {
+                        crate::frontend::ast::ParamMode::Consume => {
+                            if let Expression::Identifier(name) = arg_expr {
+                                self.mark_consumed(name)?;
+                            } else {
+                                return Err(self.annotate(SemanticErrorKind::EntropyMismatch(
+                                    "consume param must be identifier".into(),
+                                )));
+                            }
+                        }
+                        crate::frontend::ast::ParamMode::Clone => {
+                            if let Expression::Identifier(name) = arg_expr {
+                                // clone reads the value but does not mark consumed.
+                                if self
+                                    .branch_contexts
+                                    .get(&self.current_branch)
+                                    .unwrap()
+                                    .consumed
+                                    .contains(name)
+                                {
+                                    return Err(self.annotate(SemanticErrorKind::UseAfterConsume(
+                                        name.clone(),
+                                    )));
+                                }
+                            }
+                        }
+                        crate::frontend::ast::ParamMode::Decay => {
+                            if let Expression::Identifier(name) = arg_expr {
+                                self.mark_consumed(name)?;
+                            }
+                        }
+                        crate::frontend::ast::ParamMode::Peek => {
+                            // no effect beyond reading expression in nested context
+                        }
+                    }
+                }
+                Ok(())
+            }
             Expression::Identifier(name) => self.mark_consumed(name),
             Expression::FieldAccess { parent, .. } => {
                 // Structural Decay: Accessing a field consumes the "wholeness" of the parent.
@@ -721,6 +855,121 @@ impl EntropicAnalyzer {
                 self.analyze_expression(right)?;
                 Ok(())
             }
+        }
+    }
+
+    fn estimate_block_cost(&self, block: &[SpannedStatement]) -> u64 {
+        block
+            .iter()
+            .map(|stmt| self.estimate_statement_cost(&stmt.stmt))
+            .sum()
+    }
+
+    fn estimate_statement_cost(&self, stmt: &Statement) -> u64 {
+        use crate::frontend::ast::Statement;
+
+        let base = 1;
+        let extra = match stmt {
+            Statement::NetworkRequest { .. } => 5,
+            Statement::Split { .. }
+            | Statement::Merge { .. }
+            | Statement::Anchor(_)
+            | Statement::Rewind(_)
+            | Statement::Commit(_)
+            | Statement::Send { .. }
+            | Statement::ChannelOpen { .. }
+            | Statement::ChannelSend { .. }
+            | Statement::AcausalReset { .. }
+            | Statement::Capability(_) => 0,
+            Statement::Assignment { expr, .. } => self.estimate_expression_cost(expr),
+            Statement::Expression(expr) => self.estimate_expression_cost(expr),
+            Statement::RelativisticBlock { body, .. } => self.estimate_block_cost(body),
+            Statement::Isolate(block) => self.estimate_block_cost(&block.body),
+            Statement::Watchdog { recovery, .. } => self.estimate_block_cost(recovery),
+            Statement::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                1 + self
+                    .estimate_block_cost(then_branch)
+                    .max(self.estimate_block_cost(else_branch.as_ref().unwrap_or(&Vec::new())))
+            }
+            Statement::For { pacing_ms, .. } => pacing_ms.unwrap_or(1),
+            Statement::Speculate { body, fallback, .. } => {
+                let fallback_cost = self.estimate_block_cost(fallback.as_ref().unwrap_or(&Vec::new()));
+                let body_cost = self.estimate_block_cost(body);
+                1 + body_cost + fallback_cost
+            }
+            Statement::Select { cases, timeout, .. } => {
+                let case_max_cost = cases
+                    .iter()
+                    .map(|c| self.estimate_block_cost(&c.body))
+                    .max()
+                    .unwrap_or(0);
+                let timeout_cost = timeout
+                    .as_ref()
+                    .map(|b| self.estimate_block_cost(b))
+                    .unwrap_or(0);
+                1 + case_max_cost.max(timeout_cost)
+            }
+            Statement::MatchEntropy {
+                valid_branch,
+                decayed_branch,
+                consumed_branch,
+                ..
+            } => {
+                let valid_cost = valid_branch
+                    .as_ref()
+                    .map(|(_, body)| self.estimate_block_cost(body))
+                    .unwrap_or(0);
+                let decayed_cost = decayed_branch
+                    .as_ref()
+                    .map(|(_, body)| self.estimate_block_cost(body))
+                    .unwrap_or(0);
+                let consumed_cost = consumed_branch
+                    .as_ref()
+                    .map(|body| self.estimate_block_cost(body))
+                    .unwrap_or(0);
+                1 + valid_cost.max(decayed_cost).max(consumed_cost)
+            }
+            Statement::Collapse => 0,
+            Statement::SplitMap { .. } => 1,
+            Statement::Yield(_) => 0,
+            Statement::Loop { max_ms, .. } => *max_ms,
+            Statement::SpeculationMode(_) => 0,
+            Statement::Break => 0,
+            Statement::RoutineDef { taking_ms, .. } => *taking_ms,
+        };
+        base + extra
+    }
+
+    fn estimate_expression_cost(&self, expr: &Expression) -> u64 {
+        match expr {
+            Expression::Call { routine, args } => {
+                let arg_cost: u64 = args.iter().map(|a| self.estimate_expression_cost(a)).sum();
+                let taking_ms = self
+                    .routines
+                    .get(routine)
+                    .map(|(_, t)| *t)
+                    .unwrap_or(0);
+                arg_cost + taking_ms
+            }
+            Expression::BinaryOp { left, right, .. } => {
+                1 + self.estimate_expression_cost(left) + self.estimate_expression_cost(right)
+            }
+            Expression::StructLit(fields) => {
+                1 + fields.values().map(|v| self.estimate_expression_cost(v)).sum::<u64>()
+            }
+            Expression::ArrayLiteral(elements) => {
+                1 + elements.iter().map(|e| self.estimate_expression_cost(e)).sum::<u64>()
+            }
+            Expression::FieldAccess { .. }
+            | Expression::CloneOp(_)
+            | Expression::ChannelReceive(_)
+            | Expression::Identifier(_)
+            | Expression::Literal(_)
+            | Expression::Integer(_) => 1,
         }
     }
 
@@ -827,6 +1076,13 @@ impl EntropicAnalyzer {
                 format!("[{}]", parts.join(","))
             }
             Expression::Integer(v) => format!("{}", v),
+            Expression::Call { routine, args } => {
+                let args_str: Vec<String> = args
+                    .iter()
+                    .map(|e| self.expr_snippet(e))
+                    .collect();
+                format!("call {}({})", routine, args_str.join(", "))
+            }
             Expression::BinaryOp { left, op, right } => {
                 let op_str = match op {
                     crate::frontend::ast::BinaryOperator::Add => "+",
