@@ -199,10 +199,8 @@ impl Arena {
     pub fn decay(&mut self, identifier: &str) -> Result<(), MemoryError> {
         match self.bindings.remove(identifier) {
             Some(EntropicState::Valid(Payload::Struct(fields))) => {
-                self.bindings.insert(
-                    identifier.to_string(),
-                    EntropicState::Decayed(fields),
-                );
+                self.bindings
+                    .insert(identifier.to_string(), EntropicState::Decayed(fields));
                 Ok(())
             }
             Some(EntropicState::Valid(_)) => {

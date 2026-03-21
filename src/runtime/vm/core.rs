@@ -1,100 +1,15 @@
-// src/runtime/vm.rs
 use crate::frontend::ast::{
-    Capability, EntropyMode, Expression, MergeResolution, ParamMode, ResolutionStrategy,
-    SpeculationCommitMode, Statement, TimeCoordinate,
+    Capability, EntropyMode, Expression, MergeResolution, ParamMode,
+    ResolutionStrategy, SpeculationCommitMode, Statement, TimeCoordinate,
 };
 use crate::runtime::gc::GarbageCollector;
 use crate::runtime::memory::{Arena, EntropicState, MemoryError, Payload};
+use crate::runtime::vm::error::TemporalError;
+use crate::runtime::vm::state::{
+    AnchorPoint, Routine, SpeculationContext, Timeline, Vm,
+};
+
 use std::collections::{HashMap, VecDeque};
-use thiserror::Error;
-
-type CapHandler = Box<dyn Fn(&HashMap<String, String>) -> Result<(), String>>;
-
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct AnchorPoint {
-    pub name: String,
-    pub clock_snapshot: u64,
-    pub arena_snapshot: Arena,
-}
-
-#[derive(Clone)]
-pub struct Routine {
-    pub params: Vec<(ParamMode, String)>,
-    pub taking_ms: u64,
-    pub body: Vec<crate::frontend::ast::SpannedStatement>,
-}
-
-#[derive(Debug, Error)]
-pub enum TemporalError {
-    #[error("Temporal fault: branch budget exceeded")]
-    BudgetExhausted,
-    #[error("Merge collision for key '{0}' without explicit resolution strategy")]
-    UnresolvedCollision(String),
-    #[error(
-        "Paradox: Attempted to rewind past a commit horizon or anchor not found"
-    )]
-    CommitHorizonViolation,
-    #[error("Entropy Violation: Cannot rewind in Non-Deterministic (Chaos) mode")]
-    RewindDisabledInChaos,
-    #[error("Anchor not found: {0}")]
-    AnchorNotFound(String),
-    #[error("Branch not found: {0}")]
-    BranchNotFound(String),
-    #[error("Capability violation: {0}")]
-    CapabilityViolation(String),
-    #[error("Memory fault: {0}")]
-    MemoryFault(#[from] MemoryError),
-    #[error("Evaluation error: {0}")]
-    EvalError(String),
-    #[error("Channel fault: {0}")]
-    ChannelFault(String),
-    #[error("Break statement used outside of loop")]
-    InvalidBreak,
-    #[error("Watchdog bite: Branch '{0}' exceeded {1}ms limit")]
-    WatchdogBite(String, u64),
-    #[error("Pacing violation: body cost exceeded pacing")]
-    PacingViolation,
-    #[error("Invalid loop budget: max must be >0")]
-    InvalidLoopBudget,
-    #[error("Speculation collapsed or failed")]
-    SpeculationCollapsed,
-}
-
-#[derive(Default)]
-struct SpeculationContext {
-    commit_vars: std::collections::HashSet<String>,
-    in_commit_block: bool,
-    commit_executed: bool,
-    collapse_happened: bool,
-}
-
-pub struct Vm {
-    pub speculative_commit_mode: SpeculationCommitMode,
-    pub global_clock: u64,
-    pub root_timeline: Timeline,
-    pub active_branches: HashMap<String, Timeline>,
-    pub capability_handlers: HashMap<String, CapHandler>,
-    pub channels: HashMap<String, VecDeque<Payload>>,
-    pub routines: HashMap<String, Routine>,
-    speculation_stack: Vec<SpeculationContext>,
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct Timeline {
-    pub id: String,
-    pub birth_global_time: u64,
-    pub local_clock: u64,
-    pub arena: Arena,
-    pub cpu_budget_ms: u64,
-    pub anchors: HashMap<String, AnchorPoint>,
-    pub commit_horizon_passed: bool,
-    pub manifest_stack: Vec<crate::frontend::ast::Manifest>,
-    pub entropy_mode: EntropyMode,
-    pub break_requested: bool,
-    pub loop_depth: u32,
-}
 
 impl Vm {
     pub fn new() -> Self {
@@ -974,7 +889,10 @@ impl Vm {
                     .routines
                     .get(routine)
                     .ok_or_else(|| {
-                        TemporalError::EvalError(format!("unknown routine {}", routine))
+                        TemporalError::EvalError(format!(
+                            "unknown routine {}",
+                            routine
+                        ))
                     })?
                     .clone();
                 let params = routine_def.params.clone();
@@ -993,11 +911,14 @@ impl Vm {
 
                     let mut values: Vec<Option<Payload>> = Vec::new();
 
-                    for (arg_expr, (mode, _param_name)) in args.iter().zip(params.iter()) {
+                    for (arg_expr, (mode, _param_name)) in
+                        args.iter().zip(params.iter())
+                    {
                         if let Expression::Identifier(var) = arg_expr {
                             let result = match mode {
                                 ParamMode::Consume => {
-                                    let v = caller_branch_inner.arena.consume(var)?;
+                                    let v =
+                                        caller_branch_inner.arena.consume(var)?;
                                     Some(v)
                                 }
                                 ParamMode::Clone => {
@@ -1037,7 +958,8 @@ impl Vm {
                 };
 
                 // Evaluate non-identifier argument expressions now that caller borrow is released.
-                for (i, (arg_expr, _)) in args.iter().zip(params.iter()).enumerate() {
+                for (i, (arg_expr, _)) in args.iter().zip(params.iter()).enumerate()
+                {
                     if param_values[i].is_none() {
                         let v = self.evaluate_expression(branch_id, arg_expr)?;
                         param_values[i] = Some(v);
@@ -1050,8 +972,13 @@ impl Vm {
                     .collect();
 
                 // Create isolated routine execution timeline
-                let child_id = format!("__routine_{}_{}", taking_ms, self.global_clock);
-                let mut child = Timeline::new(child_id.clone(), caller_capacity, self.global_clock);
+                let child_id =
+                    format!("__routine_{}_{}", taking_ms, self.global_clock);
+                let mut child = Timeline::new(
+                    child_id.clone(),
+                    caller_capacity,
+                    self.global_clock,
+                );
                 child.entropy_mode = caller_entropy_mode;
 
                 for ((_, param_name), val) in params.iter().zip(param_values) {
@@ -1067,10 +994,10 @@ impl Vm {
                     self.execute_statement(&child_id, stmt)?;
                 }
 
-                let child_branch = self
-                    .active_branches
-                    .remove(&child_id)
-                    .ok_or_else(|| TemporalError::BranchNotFound(child_id.clone()))?;
+                let child_branch =
+                    self.active_branches.remove(&child_id).ok_or_else(|| {
+                        TemporalError::BranchNotFound(child_id.clone())
+                    })?;
 
                 if child_branch.local_clock > taking_ms {
                     return Err(TemporalError::WatchdogBite(

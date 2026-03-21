@@ -385,7 +385,7 @@ fn integration_routine_call_contract_and_entropy() -> anyhow::Result<()> {
     let result_value = vm.root_timeline.arena.peek("result");
     match result_value {
         Some(Payload::String(v)) => assert_eq!(v, "100"),
-        _ => panic!("Expected result=\"100\"") ,
+        _ => panic!("Expected result=\"100\""),
     }
 
     assert!(vm.root_timeline.arena.peek("token").is_none());
@@ -447,7 +447,8 @@ fn integration_routine_split_merge_in_body_fails_analyzer() -> anyhow::Result<()
 }
 
 #[test]
-fn integration_routine_consume_non_identifier_fails_analyzer() -> anyhow::Result<()> {
+fn integration_routine_consume_non_identifier_fails_analyzer() -> anyhow::Result<()>
+{
     let source = r#"
     @0ms: {
       routine fn(consume token) taking 5ms {

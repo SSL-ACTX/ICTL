@@ -140,14 +140,19 @@ fn parse_statement(
                     Rule::param_decl_list => {
                         for p in current.into_inner() {
                             let mut decl = p.into_inner();
-                            if let (Some(mode), Some(param_name)) = (
-                                decl.next(),
-                                decl.next(),
-                            ) {
+                            if let (Some(mode), Some(param_name)) =
+                                (decl.next(), decl.next())
+                            {
                                 let mode = match mode.as_str() {
-                                    "consume" => crate::frontend::ast::ParamMode::Consume,
-                                    "clone" => crate::frontend::ast::ParamMode::Clone,
-                                    "decay" => crate::frontend::ast::ParamMode::Decay,
+                                    "consume" => {
+                                        crate::frontend::ast::ParamMode::Consume
+                                    }
+                                    "clone" => {
+                                        crate::frontend::ast::ParamMode::Clone
+                                    }
+                                    "decay" => {
+                                        crate::frontend::ast::ParamMode::Decay
+                                    }
                                     _ => crate::frontend::ast::ParamMode::Peek,
                                 };
                                 params.push((mode, param_name.as_str().to_string()));

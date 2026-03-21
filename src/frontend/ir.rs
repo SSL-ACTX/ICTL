@@ -231,7 +231,8 @@ fn lower_expression(expr: &Expression) -> String {
         }
         Expression::Integer(i) => format!("{}", i),
         Expression::Call { routine, args } => {
-            let args_str: Vec<String> = args.iter().map(|arg| lower_expression(arg)).collect();
+            let args_str: Vec<String> =
+                args.iter().map(|arg| lower_expression(arg)).collect();
             format!("call {}({})", routine, args_str.join(", "))
         }
         Expression::BinaryOp { left, op, right } => {
