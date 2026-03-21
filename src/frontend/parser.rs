@@ -189,9 +189,20 @@ fn parse_statement(
                 for rule in res_rules.into_inner() {
                     let mut r_inner = rule.into_inner();
                     if let (Some(k), Some(v)) = (r_inner.next(), r_inner.next()) {
-                        let strat = match v.as_str() {
-                            "first_wins" => ResolutionStrategy::FirstWins,
-                            p => ResolutionStrategy::Priority(p.to_string()),
+                        let value = v.as_str();
+                        let strat = if value == "first_wins" {
+                            ResolutionStrategy::FirstWins
+                        } else if value == "decay" {
+                            ResolutionStrategy::Decay
+                        } else if let Some(inner) = value.strip_prefix("priority(") {
+                            if let Some(branch_name) = inner.strip_suffix(")") {
+                                ResolutionStrategy::Priority(branch_name.to_string())
+                            } else {
+                                ResolutionStrategy::Custom(value.to_string())
+                            }
+                        } else {
+                            // direct branch name as priority for merge compatibility
+                            ResolutionStrategy::Priority(value.to_string())
                         };
                         rules.insert(k.as_str().to_string(), strat);
                     }
@@ -231,6 +242,87 @@ fn parse_statement(
                 .map(|p| p.as_str().replace("\"", ""))
                 .unwrap_or_default();
             Statement::NetworkRequest { domain }
+        }
+        Rule::break_stmt => Statement::Break,
+        Rule::if_stmt => {
+            let mut inner = pair.into_inner();
+            let condition = inner
+                .next()
+                .map(parse_expression)
+                .unwrap_or(Expression::Literal("false".into()));
+            let then_block_pair = inner.next();
+            let then_branch = if let Some(b) = then_block_pair {
+                b.into_inner()
+                    .filter_map(|stmt_pair| stmt_pair.into_inner().next())
+                    .map(parse_statement)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let else_branch = if let Some(else_pair) = inner.next() {
+                Some(
+                    else_pair
+                        .into_inner()
+                        .filter_map(|stmt_pair| stmt_pair.into_inner().next())
+                        .map(parse_statement)
+                        .collect(),
+                )
+            } else {
+                None
+            };
+            let reconcile_rules = if let Some(reconcile_pair) = inner.next() {
+                let mut rules = HashMap::new();
+                for rule in reconcile_pair.into_inner() {
+                    let mut r_inner = rule.into_inner();
+                    if let (Some(k), Some(v)) = (r_inner.next(), r_inner.next()) {
+                        let value = v.as_str();
+                        let strat = if value == "first_wins" {
+                            ResolutionStrategy::FirstWins
+                        } else if value == "decay" {
+                            ResolutionStrategy::Decay
+                        } else if let Some(inner) = value.strip_prefix("priority(") {
+                            if let Some(branch_name) = inner.strip_suffix(")") {
+                                ResolutionStrategy::Priority(branch_name.to_string())
+                            } else {
+                                ResolutionStrategy::Custom(value.to_string())
+                            }
+                        } else {
+                            // direct branch name as priority for merge compatibility
+                            ResolutionStrategy::Priority(value.to_string())
+                        };
+                        rules.insert(k.as_str().to_string(), strat);
+                    }
+                }
+                Some(MergeResolution { rules })
+            } else {
+                None
+            };
+
+            Statement::If {
+                condition,
+                then_branch,
+                else_branch,
+                reconcile: reconcile_rules,
+            }
+        }
+        Rule::loop_stmt => {
+            let mut inner = pair.into_inner();
+            let max_value = inner
+                .next()
+                .and_then(|p| p.as_str().parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut body = Vec::new();
+            for stmt_pair in inner {
+                if stmt_pair.as_rule() == Rule::statement {
+                    if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                        body.push(parse_statement(actual_stmt));
+                    }
+                }
+            }
+            Statement::Loop {
+                max_ms: max_value,
+                body,
+            }
         }
         Rule::reset_stmt => {
             let mut inner = pair.into_inner();
@@ -298,12 +390,64 @@ fn parse_capability(pair: pest::iterators::Pair<Rule>) -> Capability {
 
 fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression {
     match pair.as_rule() {
-        Rule::expression => {
-            if let Some(i) = pair.into_inner().next() {
-                parse_expression(i)
+        Rule::expression
+        | Rule::relational_expr
+        | Rule::additive_expr
+        | Rule::multiplicative_expr => {
+            let mut inner = pair.into_inner();
+            let first = inner.next().map(parse_expression);
+            if first.is_none() {
+                return Expression::Literal("void".into());
+            }
+            let mut left = first.unwrap();
+            while let Some(op_pair) = inner.next() {
+                let op = match op_pair.as_str() {
+                    "+" => crate::frontend::ast::BinaryOperator::Add,
+                    "-" => crate::frontend::ast::BinaryOperator::Sub,
+                    "*" => crate::frontend::ast::BinaryOperator::Mul,
+                    "/" => crate::frontend::ast::BinaryOperator::Div,
+                    "==" => crate::frontend::ast::BinaryOperator::Eq,
+                    "!=" => crate::frontend::ast::BinaryOperator::Neq,
+                    "<" => crate::frontend::ast::BinaryOperator::Lt,
+                    ">" => crate::frontend::ast::BinaryOperator::Gt,
+                    "<=" => crate::frontend::ast::BinaryOperator::Le,
+                    ">=" => crate::frontend::ast::BinaryOperator::Ge,
+                    _ => crate::frontend::ast::BinaryOperator::Eq,
+                };
+                if let Some(right) = inner.next() {
+                    let right_expr = parse_expression(right);
+                    left = Expression::BinaryOp {
+                        left: Box::new(left),
+                        op,
+                        right: Box::new(right_expr),
+                    };
+                }
+            }
+            left
+        }
+        Rule::unary_expr => {
+            let mut inner = pair.into_inner();
+            if let Some(first) = inner.next() {
+                if first.as_str() == "-" {
+                    let expr = parse_expression(inner.next().unwrap());
+                    let zero = Expression::Integer(0);
+                    return Expression::BinaryOp {
+                        left: Box::new(zero),
+                        op: crate::frontend::ast::BinaryOperator::Sub,
+                        right: Box::new(expr),
+                    };
+                }
+                parse_expression(first)
             } else {
                 Expression::Literal("void".into())
             }
+        }
+        Rule::primary_expr => {
+            let inner = pair.into_inner().next().unwrap();
+            parse_expression(inner)
+        }
+        Rule::integer_literal => {
+            Expression::Integer(pair.as_str().parse::<i64>().unwrap_or(0))
         }
         Rule::string_literal => Expression::Literal(pair.as_str().replace("\"", "")),
         Rule::identifier_expr | Rule::identifier => {

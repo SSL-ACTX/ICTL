@@ -86,6 +86,17 @@ pub enum Statement {
         timeout_ms: u64,
         recovery: Vec<SpannedStatement>,
     },
+    If {
+        condition: Expression,
+        then_branch: Vec<SpannedStatement>,
+        else_branch: Option<Vec<SpannedStatement>>,
+        reconcile: Option<MergeResolution>,
+    },
+    Break,
+    Loop {
+        max_ms: u64,
+        body: Vec<SpannedStatement>,
+    },
     AcausalReset {
         target: String,
         anchor_name: String,
@@ -123,6 +134,7 @@ pub struct MergeResolution {
 pub enum ResolutionStrategy {
     FirstWins,
     Priority(String),
+    Decay,
     Custom(String),
 }
 
@@ -130,8 +142,31 @@ pub enum ResolutionStrategy {
 pub enum Expression {
     Literal(String),
     Identifier(String),
-    FieldAccess { parent: String, field: String },
+    FieldAccess {
+        parent: String,
+        field: String,
+    },
     CloneOp(String),
     StructLit(HashMap<String, Expression>),
     ChannelReceive(String),
+    Integer(i64),
+    BinaryOp {
+        left: Box<Expression>,
+        op: BinaryOperator,
+        right: Box<Expression>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOperator {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
 }

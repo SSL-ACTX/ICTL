@@ -10,6 +10,14 @@ use thiserror::Error;
 
 type CapHandler = Box<dyn Fn(&HashMap<String, String>) -> Result<(), String>>;
 
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct AnchorPoint {
+    pub name: String,
+    pub clock_snapshot: u64,
+    pub arena_snapshot: Arena,
+}
+
 #[derive(Debug, Error)]
 pub enum TemporalError {
     #[error("Temporal fault: branch budget exceeded")]
@@ -34,6 +42,8 @@ pub enum TemporalError {
     EvalError(String),
     #[error("Channel fault: {0}")]
     ChannelFault(String),
+    #[error("Break statement used outside of loop")]
+    InvalidBreak,
     #[error("Watchdog bite: Branch '{0}' exceeded {1}ms limit")]
     WatchdogBite(String, u64),
 }
@@ -58,14 +68,8 @@ pub struct Timeline {
     pub commit_horizon_passed: bool,
     pub manifest_stack: Vec<crate::frontend::ast::Manifest>,
     pub entropy_mode: EntropyMode,
-}
-
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct AnchorPoint {
-    pub name: String,
-    pub clock_snapshot: u64,
-    pub arena_snapshot: Arena,
+    pub break_requested: bool,
+    pub loop_depth: u32,
 }
 
 impl Vm {
@@ -132,6 +136,13 @@ impl Vm {
                         *timeout_ms,
                     ));
                 }
+            }
+            Statement::Break => {
+                let branch = self.get_branch_mut(branch_id)?;
+                if branch.loop_depth == 0 {
+                    return Err(TemporalError::InvalidBreak);
+                }
+                branch.break_requested = true;
             }
             Statement::AcausalReset {
                 target,
@@ -275,6 +286,153 @@ impl Vm {
                 })?;
                 chan.push_back(payload);
             }
+            Statement::If {
+                condition,
+                then_branch,
+                else_branch,
+                reconcile,
+            } => {
+                let cond_payload = self.evaluate_expression(branch_id, condition)?;
+                let cond_true = matches!(cond_payload, Payload::Integer(v) if v != 0)
+                    || matches!(cond_payload, Payload::String(ref s) if s != "" );
+
+                let then_cost = self.estimate_block_cost(then_branch);
+                let else_cost = self.estimate_block_cost(
+                    else_branch.as_ref().unwrap_or(&Vec::new()),
+                );
+                let max_cost = then_cost.max(else_cost) + 1; // 1ms overhead
+
+                // clone environment for speculative branch execution
+                let original_channels = self.channels.clone();
+                let original_branch = self.get_branch_mut(branch_id)?.clone();
+
+                let then_state = self.simulate_branch(branch_id, then_branch)?;
+                self.channels = original_channels.clone();
+                let else_state = self.simulate_branch(
+                    branch_id,
+                    else_branch.as_ref().unwrap_or(&Vec::new()),
+                )?;
+                self.channels = original_channels.clone();
+
+                let mut final_state = if cond_true {
+                    then_state.clone()
+                } else {
+                    else_state.clone()
+                };
+
+                if let Some(reconcile_rules) = reconcile {
+                    for (var, strat) in &reconcile_rules.rules {
+                        match strat {
+                            ResolutionStrategy::FirstWins => {
+                                if let Some(p) = then_state.arena.peek(var) {
+                                    final_state.arena.insert(
+                                        var.clone(),
+                                        EntropicState::Valid(p),
+                                    )?;
+                                } else if let Some(p) = else_state.arena.peek(var) {
+                                    final_state.arena.insert(
+                                        var.clone(),
+                                        EntropicState::Valid(p),
+                                    )?;
+                                } else {
+                                    final_state.arena.set_consumed(var)?;
+                                }
+                            }
+                            ResolutionStrategy::Priority(branch_name) => {
+                                if branch_name == "if" {
+                                    if let Some(p) = then_state.arena.peek(var) {
+                                        final_state.arena.insert(
+                                            var.clone(),
+                                            EntropicState::Valid(p),
+                                        )?;
+                                    } else {
+                                        final_state.arena.set_consumed(var)?;
+                                    }
+                                } else if branch_name == "else" {
+                                    if let Some(p) = else_state.arena.peek(var) {
+                                        final_state.arena.insert(
+                                            var.clone(),
+                                            EntropicState::Valid(p),
+                                        )?;
+                                    } else {
+                                        final_state.arena.set_consumed(var)?;
+                                    }
+                                }
+                            }
+                            ResolutionStrategy::Decay => {
+                                final_state.arena.set_consumed(var)?;
+                            }
+                            ResolutionStrategy::Custom(_) => {
+                                // Apply first-wins fallback for custom
+                                if let Some(p) = then_state.arena.peek(var) {
+                                    final_state.arena.insert(
+                                        var.clone(),
+                                        EntropicState::Valid(p),
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                self.set_branch_state(branch_id, final_state);
+
+                let branch = self.get_branch_mut(branch_id)?;
+                let run_cost = branch.local_clock - original_branch.local_clock;
+                if run_cost < max_cost {
+                    let padding = max_cost - run_cost;
+                    branch.local_clock += padding;
+                    branch.consume_budget(padding)?;
+                }
+            }
+            Statement::Loop { max_ms, body } => {
+                let branch = self.get_branch_mut(branch_id)?;
+                branch.loop_depth += 1;
+                let loop_start = branch.local_clock;
+                let mut iterations = 0;
+
+                while self.get_branch_mut(branch_id)?.local_clock - loop_start
+                    < *max_ms
+                {
+                    iterations += 1;
+                    if iterations > 1000 {
+                        return Err(TemporalError::WatchdogBite(
+                            branch_id.to_string(),
+                            *max_ms,
+                        ));
+                    }
+
+                    let iter_start = self.get_branch_mut(branch_id)?.local_clock;
+                    for stmt in body {
+                        self.execute_statement(branch_id, stmt)?;
+                        if self.get_branch_mut(branch_id)?.break_requested {
+                            break;
+                        }
+                    }
+
+                    if self.get_branch_mut(branch_id)?.break_requested {
+                        let branch = self.get_branch_mut(branch_id)?;
+                        branch.break_requested = false;
+                        break;
+                    }
+
+                    if self.get_branch_mut(branch_id)?.local_clock == iter_start {
+                        break;
+                    }
+                }
+
+                let branch = self.get_branch_mut(branch_id)?;
+                let target_clock = loop_start + *max_ms;
+                if branch.local_clock < target_clock {
+                    let padding = target_clock - branch.local_clock;
+                    branch.local_clock += padding;
+                    branch.consume_budget(padding)?;
+                }
+
+                if branch.loop_depth > 0 {
+                    branch.loop_depth -= 1;
+                }
+            }
             Statement::Expression(expr) => {
                 self.evaluate_expression(branch_id, expr)?;
             }
@@ -356,6 +514,41 @@ impl Vm {
                 })?;
                 Ok(payload)
             }
+            Expression::Integer(v) => Ok(Payload::Integer(*v)),
+            Expression::BinaryOp { left, op, right } => {
+                let left_value = self.evaluate_expression(branch_id, left)?;
+                let right_value = self.evaluate_expression(branch_id, right)?;
+                let l = match left_value {
+                    Payload::Integer(i) => i,
+                    Payload::String(ref s) => s.parse::<i64>().unwrap_or(0),
+                    _ => 0,
+                };
+                let r = match right_value {
+                    Payload::Integer(i) => i,
+                    Payload::String(ref s) => s.parse::<i64>().unwrap_or(0),
+                    _ => 0,
+                };
+                let result = match op {
+                    crate::frontend::ast::BinaryOperator::Add => l + r,
+                    crate::frontend::ast::BinaryOperator::Sub => l - r,
+                    crate::frontend::ast::BinaryOperator::Mul => l * r,
+                    crate::frontend::ast::BinaryOperator::Div => {
+                        if r == 0 {
+                            return Err(TemporalError::EvalError(
+                                "Division by zero".into(),
+                            ));
+                        }
+                        l / r
+                    }
+                    crate::frontend::ast::BinaryOperator::Eq => (l == r) as i64,
+                    crate::frontend::ast::BinaryOperator::Neq => (l != r) as i64,
+                    crate::frontend::ast::BinaryOperator::Lt => (l < r) as i64,
+                    crate::frontend::ast::BinaryOperator::Gt => (l > r) as i64,
+                    crate::frontend::ast::BinaryOperator::Le => (l <= r) as i64,
+                    crate::frontend::ast::BinaryOperator::Ge => (l >= r) as i64,
+                };
+                Ok(Payload::Integer(result))
+            }
         }
     }
 
@@ -390,6 +583,8 @@ impl Vm {
                 commit_horizon_passed: false,
                 manifest_stack: Vec::new(),
                 entropy_mode,
+                break_requested: false,
+                loop_depth: 0,
             };
             self.active_branches
                 .insert(branch_name.to_string(), new_branch);
@@ -411,14 +606,22 @@ impl Vm {
                 })?;
             for (key, state) in &branch.arena.bindings {
                 if let EntropicState::Valid(payload) = state {
-                    if let Some(_existing) = merged_data.get::<String>(key) {
+                    if let Some(_existing) = merged_data.get(key) {
                         let strategy =
                             resolution.rules.get(key).ok_or_else(|| {
                                 TemporalError::UnresolvedCollision(key.clone())
                             })?;
+                        eprintln!(
+                            "merge key={} existing=true branch={} strategy={:?}",
+                            key, branch_name, strategy
+                        );
                         match strategy {
                             ResolutionStrategy::FirstWins => { /* Keep */ }
                             ResolutionStrategy::Priority(p) => {
+                                eprintln!(
+                                    "priority p={} current={}",
+                                    p, branch_name
+                                );
                                 if branch_name == p {
                                     merged_data.insert(
                                         key.clone(),
@@ -426,10 +629,12 @@ impl Vm {
                                     );
                                 }
                             }
-                            _ => {
-                                return Err(TemporalError::EvalError(
-                                    "Strategy not implemented".to_string(),
-                                ))
+                            ResolutionStrategy::Decay => {
+                                merged_data
+                                    .insert(key.clone(), EntropicState::Consumed);
+                            }
+                            ResolutionStrategy::Custom(_) => {
+                                // Fallback to first-wins on custom resolver.
                             }
                         }
                     } else {
@@ -479,6 +684,89 @@ impl Vm {
                 .ok_or_else(|| TemporalError::BranchNotFound(id.to_string()))
         }
     }
+
+    fn set_branch_state(&mut self, id: &str, state: Timeline) {
+        if id == "main" {
+            self.root_timeline = state;
+        } else {
+            self.active_branches.insert(id.to_string(), state);
+        }
+    }
+
+    fn simulate_branch(
+        &mut self,
+        branch_id: &str,
+        statements: &[crate::frontend::ast::SpannedStatement],
+    ) -> Result<Timeline, TemporalError> {
+        let original_state = self.get_branch_mut(branch_id)?.clone();
+        self.set_branch_state(branch_id, original_state.clone());
+
+        for stmt in statements {
+            self.execute_statement(branch_id, stmt)?;
+            if self.get_branch_mut(branch_id)?.break_requested {
+                break;
+            }
+        }
+
+        let result = self.get_branch_mut(branch_id)?.clone();
+        self.set_branch_state(branch_id, original_state);
+        Ok(result)
+    }
+
+    fn estimate_block_cost(
+        &self,
+        block: &Vec<crate::frontend::ast::SpannedStatement>,
+    ) -> u64 {
+        block
+            .iter()
+            .map(|stmt| self.estimate_statement_cost(&stmt.stmt))
+            .sum()
+    }
+
+    fn estimate_statement_cost(
+        &self,
+        stmt: &crate::frontend::ast::Statement,
+    ) -> u64 {
+        use crate::frontend::ast::Statement;
+
+        let base = 1;
+        let extra = match stmt {
+            Statement::NetworkRequest { .. } => 5,
+            Statement::Split { .. }
+            | Statement::Merge { .. }
+            | Statement::Anchor(_)
+            | Statement::Rewind(_)
+            | Statement::Commit(_)
+            | Statement::Send { .. }
+            | Statement::ChannelOpen { .. }
+            | Statement::ChannelSend { .. }
+            | Statement::AcausalReset { .. }
+            | Statement::Capability(_)
+            | Statement::Assignment { .. }
+            | Statement::Expression(_) => 0,
+            Statement::RelativisticBlock { body, .. } => {
+                self.estimate_block_cost(body)
+            }
+            Statement::Isolate(block) => self.estimate_block_cost(&block.body),
+            Statement::Watchdog { recovery, .. } => {
+                self.estimate_block_cost(recovery)
+            }
+            Statement::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                1 + self.estimate_block_cost(then_branch).max(
+                    self.estimate_block_cost(
+                        else_branch.as_ref().unwrap_or(&Vec::new()),
+                    ),
+                )
+            }
+            Statement::Loop { max_ms, .. } => *max_ms,
+            Statement::Break => 0,
+        };
+        base + extra
+    }
 }
 
 impl Timeline {
@@ -493,6 +781,8 @@ impl Timeline {
             commit_horizon_passed: false,
             manifest_stack: Vec::new(),
             entropy_mode: EntropyMode::Deterministic,
+            break_requested: false,
+            loop_depth: 0,
         }
     }
 

@@ -20,6 +20,9 @@ statement = {
     | anchor_stmt
     | rewind_stmt
     | commit_stmt
+    | if_stmt
+    | break_stmt
+    | loop_stmt
     | assignment_stmt
     | open_chan_stmt
     | chan_send_stmt
@@ -29,6 +32,11 @@ statement = {
     | reset_stmt
     | network_request_stmt
 }
+
+break_stmt = { "break" }
+
+if_stmt = { "if" ~ "(" ~ expression ~ ")" ~ statement_block ~ ("else" ~ statement_block)? ~ ("reconcile" ~ "(" ~ resolution_rules ~ ")")? }
+loop_stmt = { "loop" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ statement* ~ "}" }
 
 network_request_stmt = { "network_request" ~ string_literal }
 
@@ -61,7 +69,16 @@ watchdog_stmt = { "watchdog" ~ identifier ~ "timeout" ~ amount ~ "ms" ~ ("recove
 
 reset_stmt = { "reset" ~ identifier ~ "to" ~ identifier }
 
-expression = { chan_recv_expr | struct_lit | clone_op | field_access | identifier_expr | string_literal }
+expression = { relational_expr }
+relational_expr = {
+    additive_expr ~ (("==" | "!=" | "<=" | ">=" | "<" | ">") ~ additive_expr)*
+}
+additive_expr = { multiplicative_expr ~ (("+" | "-") ~ multiplicative_expr)* }
+multiplicative_expr = { unary_expr ~ (("*" | "/") ~ unary_expr)* }
+unary_expr = { "-" ~ unary_expr | primary_expr }
+primary_expr = { chan_recv_expr | struct_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
+
+integer_literal = @{ "-"? ~ ASCII_DIGIT+ }
 struct_lit = { "struct" ~ "{" ~ param_list ~ "}" }
 clone_op   = { "clone" ~ "(" ~ identifier ~ ")" }
 field_access = { identifier ~ "." ~ identifier }

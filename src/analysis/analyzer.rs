@@ -12,6 +12,10 @@ pub enum SemanticErrorKind {
     UnresolvedMerge(String),
     #[error("Branch Leak: Variable '{0}' is consumed in one branch but accessed in a parallel timeline.")]
     CrossBranchViolation(String),
+    #[error("Entropy Mismatch: variables require reconcile: {0}")]
+    EntropyMismatch(String),
+    #[error("Invalid 'loop' budget: max must be >0")]
+    InvalidLoopBudget,
     #[error("Invalid Access: '{0}' is not a structure or has decayed.")]
     InvalidStructuralAccess(String),
     #[error("Capability violation: Required capability '{0}' is not declared in this isolate.")]
@@ -183,6 +187,102 @@ impl EntropicAnalyzer {
                     self.analyze_statement(inner_stmt)?;
                 }
             }
+            Statement::If {
+                condition,
+                then_branch,
+                else_branch,
+                reconcile,
+            } => {
+                self.analyze_expression(condition)?;
+
+                let original_state = self
+                    .branch_contexts
+                    .get(&self.current_branch)
+                    .cloned()
+                    .unwrap_or_default();
+
+                // Simulate then-branch
+                let then_state = original_state.clone();
+                let mut then_contexts = self.branch_contexts.clone();
+                then_contexts
+                    .insert(self.current_branch.clone(), then_state.clone());
+                let previous_contexts =
+                    std::mem::replace(&mut self.branch_contexts, then_contexts);
+
+                for inner_stmt in then_branch {
+                    self.analyze_statement(inner_stmt)?;
+                }
+                let then_end_state = self
+                    .branch_contexts
+                    .get(&self.current_branch)
+                    .cloned()
+                    .unwrap_or_default();
+
+                // Simulate else-branch
+                self.branch_contexts = previous_contexts.clone();
+                let else_state = original_state.clone();
+                let mut else_contexts = self.branch_contexts.clone();
+                else_contexts
+                    .insert(self.current_branch.clone(), else_state.clone());
+                self.branch_contexts = else_contexts;
+
+                if let Some(else_branch) = else_branch {
+                    for inner_stmt in else_branch {
+                        self.analyze_statement(inner_stmt)?;
+                    }
+                }
+                let else_end_state = self
+                    .branch_contexts
+                    .get(&self.current_branch)
+                    .cloned()
+                    .unwrap_or_default();
+
+                // Determine entropy mismatches
+                let mut mismatch_vars = Vec::new();
+                for name in then_end_state
+                    .consumed
+                    .union(&else_end_state.consumed)
+                    .cloned()
+                {
+                    let in_then = then_end_state.consumed.contains(&name);
+                    let in_else = else_end_state.consumed.contains(&name);
+                    if in_then != in_else {
+                        mismatch_vars.push(name);
+                    }
+                }
+
+                if !mismatch_vars.is_empty() && reconcile.is_none() {
+                    return Err(self.annotate(SemanticErrorKind::EntropyMismatch(
+                        mismatch_vars.join(", "),
+                    )));
+                }
+
+                // Merge contexts conservatively: consumed union and yields union
+                let merged_state = BranchState {
+                    consumed: then_end_state
+                        .consumed
+                        .union(&else_end_state.consumed)
+                        .cloned()
+                        .collect(),
+                    yields: then_end_state
+                        .yields
+                        .union(&else_end_state.yields)
+                        .cloned()
+                        .collect(),
+                };
+
+                self.branch_contexts = previous_contexts;
+                self.branch_contexts
+                    .insert(self.current_branch.clone(), merged_state);
+            }
+            Statement::Loop { max_ms, body } => {
+                if *max_ms == 0 {
+                    return Err(self.annotate(SemanticErrorKind::InvalidLoopBudget));
+                }
+                for inner_stmt in body {
+                    self.analyze_statement(inner_stmt)?;
+                }
+            }
             Statement::Isolate(block) => {
                 let mut cap_set = HashSet::new();
                 for cap in &block.manifest.capabilities {
@@ -273,6 +373,9 @@ impl EntropicAnalyzer {
                 // Sending to a channel is a destructive move
                 self.mark_consumed(value_id)?;
             }
+            Statement::Break => {
+                // break only affects runtime loop flow, no semantic entropic change
+            }
             Statement::Expression(expr) => {
                 self.analyze_expression(expr)?;
             }
@@ -324,8 +427,15 @@ impl EntropicAnalyzer {
                 }
                 Ok(())
             }
-            Expression::ChannelReceive(_) | Expression::Literal(_) => {
-                // Receive creates new state; Literals are constant
+            Expression::ChannelReceive(_)
+            | Expression::Literal(_)
+            | Expression::Integer(_) => {
+                // Receive creates new state; Literals and integers are constant
+                Ok(())
+            }
+            Expression::BinaryOp { left, right, .. } => {
+                self.analyze_expression(left)?;
+                self.analyze_expression(right)?;
                 Ok(())
             }
         }
@@ -396,6 +506,13 @@ impl EntropicAnalyzer {
                 _ => "relativistic block".to_string(),
             },
             Statement::Capability(cap) => format!("require {}(...)", cap.path),
+            Statement::If { condition, .. } => {
+                format!("if ({}) {{ ... }}", self.expr_snippet(condition))
+            }
+            Statement::Loop { max_ms, .. } => {
+                format!("loop (max {}ms) {{ ... }}", max_ms)
+            }
+            Statement::Break => "break".to_string(),
             _ => format!("{:?}", stmt),
         }
     }
@@ -416,6 +533,27 @@ impl EntropicAnalyzer {
                 format!("struct {{ {} }}", parts.join(", "))
             }
             Expression::ChannelReceive(id) => format!("chan_recv({})", id),
+            Expression::Integer(v) => format!("{}", v),
+            Expression::BinaryOp { left, op, right } => {
+                let op_str = match op {
+                    crate::frontend::ast::BinaryOperator::Add => "+",
+                    crate::frontend::ast::BinaryOperator::Sub => "-",
+                    crate::frontend::ast::BinaryOperator::Mul => "*",
+                    crate::frontend::ast::BinaryOperator::Div => "/",
+                    crate::frontend::ast::BinaryOperator::Eq => "==",
+                    crate::frontend::ast::BinaryOperator::Neq => "!=",
+                    crate::frontend::ast::BinaryOperator::Lt => "<",
+                    crate::frontend::ast::BinaryOperator::Gt => ">",
+                    crate::frontend::ast::BinaryOperator::Le => "<=",
+                    crate::frontend::ast::BinaryOperator::Ge => ">=",
+                };
+                format!(
+                    "({} {} {})",
+                    self.expr_snippet(left),
+                    op_str,
+                    self.expr_snippet(right)
+                )
+            }
         }
     }
 }

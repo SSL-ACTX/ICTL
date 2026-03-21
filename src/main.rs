@@ -10,11 +10,13 @@ use std::path::PathBuf;
 
 fn usage(program: &str) {
     eprintln!(
-        "Usage: {} [--check] [--run] <file1.ictl> [file2.ictl ...]",
+        "Usage: {} [--check] [--run] [--dump-ast] [--dump-ir] <file1.ictl> [file2.ictl ...]",
         program
     );
-    eprintln!("  --check   Perform semantic analysis only");
-    eprintln!("  --run     Execute program after analysis (default)");
+    eprintln!("  --check     Perform semantic analysis only");
+    eprintln!("  --run       Execute program after analysis (default)");
+    eprintln!("  --dump-ast  Print the parsed AST and continue");
+    eprintln!("  --dump-ir   Print the lowered IR and continue");
 }
 
 fn main() -> anyhow::Result<()> {
@@ -26,6 +28,8 @@ fn main() -> anyhow::Result<()> {
 
     let mut check_only = false;
     let mut run_program = false;
+    let mut dump_ast = false;
+    let mut dump_ir = false;
 
     while let Some(arg) = args.first() {
         if arg == "--check" {
@@ -35,6 +39,16 @@ fn main() -> anyhow::Result<()> {
         }
         if arg == "--run" {
             run_program = true;
+            args.remove(0);
+            continue;
+        }
+        if arg == "--dump-ast" {
+            dump_ast = true;
+            args.remove(0);
+            continue;
+        }
+        if arg == "--dump-ir" {
+            dump_ir = true;
             args.remove(0);
             continue;
         }
@@ -65,6 +79,15 @@ fn main() -> anyhow::Result<()> {
                 continue;
             }
         };
+
+        if dump_ast {
+            println!("AST for {}:\n{:#?}", path.display(), program);
+        }
+
+        if dump_ir {
+            let ir_program = frontend::ir::lower_program(&program);
+            println!("IR for {}:\n{}", path.display(), ir_program);
+        }
 
         let mut analyzer = EntropicAnalyzer::new();
         if let Err(err) = analyzer.analyze_program_with_source(

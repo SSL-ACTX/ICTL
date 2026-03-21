@@ -176,6 +176,21 @@ impl Arena {
         }
     }
 
+    pub fn set_consumed(&mut self, identifier: &str) -> Result<(), MemoryError> {
+        match self.bindings.get(identifier) {
+            Some(EntropicState::Valid(payload)) => {
+                self.used -= payload.weight();
+                self.bindings
+                    .insert(identifier.to_string(), EntropicState::Consumed);
+                Ok(())
+            }
+            Some(EntropicState::Decayed(_)) | Some(EntropicState::Consumed) => {
+                Err(MemoryError::AlreadyConsumed)
+            }
+            None => Err(MemoryError::AlreadyConsumed),
+        }
+    }
+
     /// Calculates the CPU and Memory overhead for cloning data.
     pub fn calculate_clone_cost(&self, payload: &Payload, depth: u32) -> u64 {
         let base_overhead = 10;

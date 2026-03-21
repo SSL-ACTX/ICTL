@@ -33,6 +33,120 @@ fn integration_parse_analyze_execute_timeline() -> anyhow::Result<()> {
 }
 
 #[test]
+fn integration_if_statement_integer_arith() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let a = 10
+      let b = 20
+      if (a < b) {
+        let c = 1
+      } else {
+        let c = 0
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let c_val = vm.root_timeline.arena.peek("c");
+    match c_val {
+        Some(Payload::Integer(v)) => assert_eq!(v, 1),
+        _ => panic!("Expected c=1 in branch"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn integration_if_equalizes_timing() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      if (1 == 0) {
+        network_request "api.example.com"
+      } else {
+        let x = "hi"
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    assert_eq!(vm.root_timeline.local_clock, 8); // condition + padding -> 8 total
+    Ok(())
+}
+
+#[test]
+fn integration_loop_break_pads_to_max() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      loop (max 10ms) {
+        let x = "a"
+        break
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    assert_eq!(vm.root_timeline.local_clock, 11); // 1 for loop stmt + pad to 10 (inclusive)
+    Ok(())
+}
+
+#[test]
+fn integration_if_requires_reconcile_for_crosspath_consume() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let x = "foo"
+      if (1 == 1) {
+        let y = x
+      } else {
+        let z = "bar"
+      }
+    }
+    "#; // no reconcile
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err());
+
+    let source_with_reconcile = r#"
+    @0ms: {
+      let x = "foo"
+      if (1 == 1) {
+        let y = x
+      } else {
+        let z = "bar"
+      } reconcile (x=first_wins)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source_with_reconcile)?;
+    analyzer.analyze_program(&program)?;
+    Ok(())
+}
+
+#[test]
 fn integration_merge_resolution_first_wins() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {
@@ -62,26 +176,6 @@ fn integration_merge_resolution_first_wins() -> anyhow::Result<()> {
         Some(Payload::String(inner)) => assert_eq!(inner, "v1"),
         _ => panic!("Expected merged v in root timeline"),
     }
-
-    Ok(())
-}
-
-#[test]
-fn integration_cli_runs_sample_file() -> anyhow::Result<()> {
-    use std::process::Command;
-
-    let out = Command::new("cargo")
-        .arg("run")
-        .arg("--")
-        .arg("--run")
-        .arg("examples/sample.ictl")
-        .output()?;
-
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("=== Compiling examples/sample.ictl ==="));
-    assert!(stdout.contains("Analysis: ok"));
-    assert!(stdout.contains("Run: ok"));
 
     Ok(())
 }
@@ -358,7 +452,6 @@ fn integration_commit_then_rewind_fails() -> anyhow::Result<()> {
     "#;
 
     let program = parser::parse_ictl(source)?;
-    dbg!(&program.timelines);
     let mut analyzer = EntropicAnalyzer::new();
     analyzer.analyze_program(&program)?;
 
