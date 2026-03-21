@@ -378,6 +378,210 @@ impl EntropicAnalyzer {
             Statement::Break => {
                 // break only affects runtime loop flow, no semantic entropic change
             }
+            Statement::Select {
+                max_ms: _,
+                cases,
+                timeout,
+                reconcile,
+            } => {
+                let original_state = self
+                    .branch_contexts
+                    .get(&self.current_branch)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let mut branch_results = Vec::new();
+
+                for case in cases {
+                    self.analyze_expression(&case.source)?;
+
+                    let saved_contexts = self.branch_contexts.clone();
+                    let mut branch_contexts = self.branch_contexts.clone();
+                    branch_contexts
+                        .insert(self.current_branch.clone(), original_state.clone());
+                    self.branch_contexts = branch_contexts;
+
+                    // case binding is local to the select branch and not propagated out
+
+                    for stmt in &case.body {
+                        self.analyze_statement(stmt)?;
+                    }
+
+                    let mut end_state = self
+                        .branch_contexts
+                        .get(&self.current_branch)
+                        .cloned()
+                        .unwrap_or_default();
+                    end_state.consumed.remove(&case.binding);
+                    end_state.yields.remove(&case.binding);
+                    branch_results.push(end_state);
+                    self.branch_contexts = saved_contexts;
+                }
+
+                if let Some(timeout_body) = timeout {
+                    let saved_contexts = self.branch_contexts.clone();
+                    let mut branch_contexts = self.branch_contexts.clone();
+                    branch_contexts
+                        .insert(self.current_branch.clone(), original_state.clone());
+                    self.branch_contexts = branch_contexts;
+
+                    for stmt in timeout_body {
+                        self.analyze_statement(stmt)?;
+                    }
+
+                    let end_state = self
+                        .branch_contexts
+                        .get(&self.current_branch)
+                        .cloned()
+                        .unwrap_or_default();
+                    branch_results.push(end_state);
+                    self.branch_contexts = saved_contexts;
+                }
+
+                let merged_state = if branch_results.is_empty() {
+                    original_state.clone()
+                } else {
+                    let mut merged = original_state.clone();
+                    for st in &branch_results {
+                        merged.consumed.extend(st.consumed.clone().into_iter());
+                        merged.yields.extend(st.yields.clone().into_iter());
+                    }
+                    merged
+                };
+
+                // Determine variables that are consumed in some but not all branches (entropy branching mismatch)
+                let all_vars: std::collections::HashSet<_> = branch_results
+                    .iter()
+                    .flat_map(|s| s.consumed.iter().cloned())
+                    .collect();
+
+                let mut mismatch_vars = Vec::new();
+                for var in all_vars {
+                    let in_some =
+                        branch_results.iter().any(|s| s.consumed.contains(&var));
+                    let in_all =
+                        branch_results.iter().all(|s| s.consumed.contains(&var));
+                    if in_some && !in_all {
+                        mismatch_vars.push(var.clone());
+                    }
+                }
+
+                if !mismatch_vars.is_empty() && reconcile.is_none() {
+                    return Err(self.annotate(SemanticErrorKind::EntropyMismatch(
+                        mismatch_vars.join(", "),
+                    )));
+                }
+
+                if let Some(rule) = reconcile {
+                    for var in mismatch_vars {
+                        if !rule.rules.contains_key(&var) {
+                            return Err(self
+                                .annotate(SemanticErrorKind::EntropyMismatch(var)));
+                        }
+                    }
+                }
+
+                self.branch_contexts
+                    .insert(self.current_branch.clone(), merged_state);
+            }
+            Statement::MatchEntropy {
+                target: _target,
+                valid_branch,
+                decayed_branch,
+                consumed_branch,
+            } => {
+                let original_state = self
+                    .branch_contexts
+                    .get(&self.current_branch)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let mut context_candidates = Vec::new();
+
+                if let Some((binding, branch_body)) = valid_branch {
+                    let saved_contexts = self.branch_contexts.clone();
+                    let mut branch_contexts = self.branch_contexts.clone();
+                    branch_contexts
+                        .insert(self.current_branch.clone(), original_state.clone());
+                    self.branch_contexts = branch_contexts;
+
+                    self.branch_contexts
+                        .get_mut(&self.current_branch)
+                        .unwrap()
+                        .yields
+                        .insert(binding.clone());
+
+                    for stmt in branch_body {
+                        self.analyze_statement(stmt)?;
+                    }
+
+                    let end_state = self
+                        .branch_contexts
+                        .get(&self.current_branch)
+                        .cloned()
+                        .unwrap_or_default();
+                    context_candidates.push(end_state);
+                    self.branch_contexts = saved_contexts;
+                }
+
+                if let Some((binding, branch_body)) = decayed_branch {
+                    let saved_contexts = self.branch_contexts.clone();
+                    let mut branch_contexts = self.branch_contexts.clone();
+                    branch_contexts
+                        .insert(self.current_branch.clone(), original_state.clone());
+                    self.branch_contexts = branch_contexts;
+
+                    self.branch_contexts
+                        .get_mut(&self.current_branch)
+                        .unwrap()
+                        .yields
+                        .insert(binding.clone());
+
+                    for stmt in branch_body {
+                        self.analyze_statement(stmt)?;
+                    }
+
+                    let end_state = self
+                        .branch_contexts
+                        .get(&self.current_branch)
+                        .cloned()
+                        .unwrap_or_default();
+                    context_candidates.push(end_state);
+                    self.branch_contexts = saved_contexts;
+                }
+
+                if let Some(branch_body) = consumed_branch {
+                    let saved_contexts = self.branch_contexts.clone();
+                    let mut branch_contexts = self.branch_contexts.clone();
+                    branch_contexts
+                        .insert(self.current_branch.clone(), original_state.clone());
+                    self.branch_contexts = branch_contexts;
+
+                    for stmt in branch_body {
+                        self.analyze_statement(stmt)?;
+                    }
+
+                    let end_state = self
+                        .branch_contexts
+                        .get(&self.current_branch)
+                        .cloned()
+                        .unwrap_or_default();
+                    context_candidates.push(end_state);
+                    self.branch_contexts = saved_contexts;
+                }
+
+                let merged_state = context_candidates.into_iter().fold(
+                    original_state.clone(),
+                    |mut acc, s| {
+                        acc.consumed.extend(s.consumed.into_iter());
+                        acc.yields.extend(s.yields.into_iter());
+                        acc
+                    },
+                );
+
+                self.branch_contexts
+                    .insert(self.current_branch.clone(), merged_state);
+            }
             Statement::SpeculationMode(_) => {
                 // language-level mode settings affect runtime configuration only
             }

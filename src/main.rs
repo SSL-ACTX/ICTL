@@ -19,6 +19,10 @@ fn usage(program: &str) {
     eprintln!("  --dump-ir   Print the lowered IR and continue");
 }
 
+fn format_entropic_state(state: &runtime::memory::EntropicState) -> String {
+    format!("{:?}", state)
+}
+
 fn main() -> anyhow::Result<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
@@ -70,7 +74,7 @@ fn main() -> anyhow::Result<()> {
             anyhow::anyhow!("Failed reading {}: {}", path.display(), e)
         })?;
 
-        println!("=== Compiling {} ===", path.display());
+        // println!("=== Compiling {} ===", path.display());
 
         let program = match frontend::parser::parse_ictl(&source) {
             Ok(p) => p,
@@ -121,7 +125,14 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+
             println!("  Run: ok");
+            println!("  Global clock: {}", vm.global_clock);
+            println!("  Main local clock: {}", vm.root_timeline.local_clock);
+            println!("  Final arena state:");
+            for (name, state) in &vm.root_timeline.arena.bindings {
+                println!("    {} = {}", name, format_entropic_state(state));
+            }
         }
     }
 

@@ -17,7 +17,7 @@ pub enum MemoryError {
     CloneBudgetExceeded,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntropicState {
     Valid(Payload),
     Decayed(HashMap<String, EntropicState>),
@@ -25,7 +25,7 @@ pub enum EntropicState {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Payload {
     Integer(i64),
     String(String),

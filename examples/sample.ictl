@@ -1,23 +1,25 @@
 @0ms: {
-  speculation_mode(selective)
-  speculate (max 50ms) {
-    let secret = "hidden"
-    commit {
-      let final = "committed"
-    }
-  } fallback {
-    let final = "default"
-  }
-}
+  open_chan c(2)
+  let payload = "hello"
+  chan_send c(payload)
 
-@60ms: {
-  speculation_mode(full)
-  speculate (max 50ms) {
-    let secret = "hidden"
-    commit {
-      let final = "committed"
+  select (max 10ms) {
+    case data = chan_recv(c): {
+      let selected = struct { value = data }
+      let tag = "selected"
     }
-  } fallback {
-    let final = "default"
+    timeout: {
+      let selected = struct { value = "timeout" }
+      let tag = "timeout"
+    }
+  } reconcile (selected=first_wins, tag=first_wins)
+
+  match entropy(selected) {
+    Valid(s):
+      let final = s.value
+    Decayed(s):
+      let final = "decayed"
+    Consumed:
+      let final = "missing"
   }
 }

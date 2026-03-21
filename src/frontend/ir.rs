@@ -168,6 +168,12 @@ fn lower_statement(stmt: &Statement) -> String {
         Statement::Speculate { max_ms, .. } => {
             format!("speculate (max {}ms) {{ ... }}", max_ms)
         }
+        Statement::Select { max_ms, .. } => {
+            format!("select (max {}ms) {{ ... }}", max_ms)
+        }
+        Statement::MatchEntropy { target, .. } => {
+            format!("match entropy({}) {{ ... }}", target)
+        }
         Statement::Collapse => "collapse".to_string(),
         Statement::Break => "break".to_string(),
         Statement::AcausalReset {

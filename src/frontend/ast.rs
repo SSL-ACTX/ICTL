@@ -99,6 +99,18 @@ pub enum Statement {
     },
     Collapse,
     SpeculationMode(SpeculationCommitMode),
+    Select {
+        max_ms: u64,
+        cases: Vec<SelectCase>,
+        timeout: Option<Vec<SpannedStatement>>,
+        reconcile: Option<MergeResolution>,
+    },
+    MatchEntropy {
+        target: String,
+        valid_branch: Option<(String, Vec<SpannedStatement>)>,
+        decayed_branch: Option<(String, Vec<SpannedStatement>)>,
+        consumed_branch: Option<Vec<SpannedStatement>>,
+    },
     If {
         condition: Expression,
         then_branch: Vec<SpannedStatement>,
@@ -165,6 +177,13 @@ pub enum ResolutionStrategy {
     Priority(String),
     Decay,
     Custom(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectCase {
+    pub binding: String,
+    pub source: Expression,
+    pub body: Vec<SpannedStatement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

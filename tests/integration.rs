@@ -239,6 +239,103 @@ fn integration_speculate_selective_commit_mode() -> anyhow::Result<()> {
 }
 
 #[test]
+fn integration_select_case_first_chan_ready() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let msg = "hello"
+      open_chan c(2)
+      chan_send c(msg)
+      select (max 10ms) {
+        case data = chan_recv(c):
+          let out = data
+        timeout:
+          let out = "timeout"
+      } reconcile (out=first_wins)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let out_val = vm.root_timeline.arena.peek("out");
+    match out_val {
+        Some(Payload::String(s)) => assert_eq!(s, "hello"),
+        _ => panic!("Expected out=hello"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn integration_select_timeout_runs() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      select (max 5ms) {
+        case data = chan_recv(c):
+          let out = data
+        timeout:
+          let out = "timeout"
+      } reconcile (out=first_wins)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let out_val = vm.root_timeline.arena.peek("out");
+    match out_val {
+        Some(Payload::String(s)) => assert_eq!(s, "timeout"),
+        _ => panic!("Expected out=timeout"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn integration_match_entropy_valid_branch() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let user = struct { id = "1", name = "Alice" }
+      match entropy(user) {
+        Valid(u):
+          let out = u.id
+        Consumed:
+          let out = "consumed"
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let out_val = vm.root_timeline.arena.peek("out");
+    match out_val {
+        Some(Payload::String(s)) => assert_eq!(s, "1"),
+        _ => panic!("Expected out=1"),
+    }
+
+    Ok(())
+}
+
+#[test]
 fn integration_loop_break_pads_to_max() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {

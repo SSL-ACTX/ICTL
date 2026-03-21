@@ -272,6 +272,157 @@ fn parse_statement(
             };
             Statement::SpeculationMode(mode)
         }
+        Rule::select_stmt => {
+            let mut inner = pair.into_inner();
+            let max_ms = inner
+                .next()
+                .and_then(|p| p.as_str().parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut cases = Vec::new();
+            let mut timeout = None;
+            let mut reconcile = None;
+
+            for element in inner {
+                match element.as_rule() {
+                    Rule::select_case => {
+                        let mut case_inner = element.into_inner();
+                        let binding = case_inner
+                            .next()
+                            .map(|p| p.as_str().to_string())
+                            .unwrap_or_default();
+                        let source = case_inner
+                            .next()
+                            .map(parse_expression)
+                            .unwrap_or(Expression::Literal("".into()));
+                        // statement_block may have inline statement set
+                        let body = case_inner
+                            .next()
+                            .map(|stmt_block| {
+                                stmt_block
+                                    .into_inner()
+                                    .filter_map(|s| s.into_inner().next())
+                                    .map(parse_statement)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        cases.push(crate::frontend::ast::SelectCase {
+                            binding,
+                            source,
+                            body,
+                        });
+                    }
+                    Rule::timeout_clause => {
+                        if let Some(block) = element.into_inner().next() {
+                            let body = block
+                                .into_inner()
+                                .filter_map(|s| s.into_inner().next())
+                                .map(parse_statement)
+                                .collect();
+                            timeout = Some(body);
+                        }
+                    }
+                    Rule::resolution_rules => {
+                        let mut rules = HashMap::new();
+                        for rule in element.into_inner() {
+                            let mut r_inner = rule.into_inner();
+                            if let (Some(k), Some(v)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let value = v.as_str();
+                                let strat = if value == "first_wins" {
+                                    ResolutionStrategy::FirstWins
+                                } else if value == "decay" {
+                                    ResolutionStrategy::Decay
+                                } else if let Some(inner) =
+                                    value.strip_prefix("priority(")
+                                {
+                                    if let Some(branch_name) =
+                                        inner.strip_suffix(")")
+                                    {
+                                        ResolutionStrategy::Priority(
+                                            branch_name.to_string(),
+                                        )
+                                    } else {
+                                        ResolutionStrategy::Custom(value.to_string())
+                                    }
+                                } else {
+                                    ResolutionStrategy::Priority(value.to_string())
+                                };
+                                rules.insert(k.as_str().to_string(), strat);
+                            }
+                        }
+                        reconcile = Some(MergeResolution { rules });
+                    }
+                    _ => {}
+                }
+            }
+            Statement::Select {
+                max_ms,
+                cases,
+                timeout,
+                reconcile,
+            }
+        }
+        Rule::match_entropy_stmt => {
+            let mut inner = pair.into_inner();
+            let target = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut valid_branch = None;
+            let mut decayed_branch = None;
+            let mut consumed_branch = None;
+
+            for element in inner {
+                if element.as_rule() == Rule::entropy_branch {
+                    let text = element.as_str().trim();
+                    let is_valid = text.starts_with("Valid(");
+                    let is_decayed = text.starts_with("Decayed(");
+                    let is_consumed = text.starts_with("Consumed");
+
+                    let mut branch_inner = element.into_inner();
+                    if is_valid || is_decayed {
+                        let var_name = branch_inner
+                            .next()
+                            .map(|p| p.as_str().to_string())
+                            .unwrap_or_default();
+                        let body = branch_inner
+                            .next()
+                            .map(|stmt_block| {
+                                stmt_block
+                                    .into_inner()
+                                    .filter_map(|s| s.into_inner().next())
+                                    .map(parse_statement)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if is_valid {
+                            valid_branch = Some((var_name, body));
+                        } else {
+                            decayed_branch = Some((var_name, body));
+                        }
+                    } else if is_consumed {
+                        let body = branch_inner
+                            .next()
+                            .map(|stmt_block| {
+                                stmt_block
+                                    .into_inner()
+                                    .filter_map(|s| s.into_inner().next())
+                                    .map(parse_statement)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        consumed_branch = Some(body);
+                    }
+                }
+            }
+            Statement::MatchEntropy {
+                target,
+                valid_branch,
+                decayed_branch,
+                consumed_branch,
+            }
+        }
         Rule::anchor_stmt => Statement::Anchor(
             pair.into_inner()
                 .next()

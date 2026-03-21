@@ -74,6 +74,50 @@ speculate (max 10ms) {
   - `Selective` (default): only explicit commit values move up
   - `Full`: entire speculative child state merges into parent (configured with VM option).
 
+### `select` / `timeout`
+
+```ictl
+@0ms: {
+  open_chan c(1)
+  let msg = "ping"
+  chan_send c(msg)
+
+  select (max 10ms) {
+    case data = chan_recv(c):
+      let out = data
+    timeout:
+      let out = "timeout"
+  } reconcile (out=first_wins)
+}
+```
+
+- `select (max Nm)` waits for the first ready `case`.
+- Each `case` is evaluated with channel receive semantics.
+- `timeout:` is executed if no case becomes ready before `max`.
+- `reconcile` merges branch outputs similarly to `if`.
+
+### `match entropy`
+
+```ictl
+@0ms: {
+  let user = struct { id = "1", name = "Alice" }
+
+  match entropy(user) {
+    Valid(u):
+      let result = u.id
+    Decayed(u):
+      let result = "decayed"
+    Consumed:
+      let result = "missing"
+  }
+}
+```
+
+- `match entropy(x)` branches based on `x` arena state: `Valid`, `Decayed`, `Consumed`.
+- `Valid` and `Decayed` branch arguments introduce a new local binding for the matched payload.
+- `Consumed` handles empty/consumed inputs.
+
+
 ### `if` statement
 
 ```ictl

@@ -424,6 +424,115 @@ impl Vm {
                 })?;
                 chan.push_back(payload);
             }
+            Statement::Select {
+                max_ms: _,
+                cases,
+                timeout,
+                reconcile: _,
+            } => {
+                let original_clock = {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    branch.local_clock
+                };
+
+                let mut selected_case = None;
+                for case in cases {
+                    if let Expression::ChannelReceive(chan_id) = &case.source {
+                        if let Some(chan) = self.channels.get(chan_id) {
+                            if !chan.is_empty() {
+                                selected_case = Some(case);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(case) = selected_case {
+                    if let Expression::ChannelReceive(chan_id) = &case.source {
+                        if let Some(payload) = self
+                            .channels
+                            .get_mut(chan_id)
+                            .and_then(|q| q.pop_front())
+                        {
+                            let branch = self.get_branch_mut(branch_id)?;
+                            branch.arena.insert(
+                                case.binding.clone(),
+                                EntropicState::Valid(payload),
+                            )?;
+                        }
+                    }
+                    for stmt in &case.body {
+                        self.execute_statement(branch_id, stmt)?;
+                    }
+                    // case binding is local to the select block
+                    let branch = self.get_branch_mut(branch_id)?;
+                    branch.arena.bindings.remove(&case.binding);
+                } else if let Some(timeout_body) = timeout {
+                    for stmt in timeout_body {
+                        self.execute_statement(branch_id, stmt)?;
+                    }
+                }
+
+                let case_max_cost = cases
+                    .iter()
+                    .map(|c| self.estimate_block_cost(&c.body))
+                    .max()
+                    .unwrap_or(0);
+                let timeout_cost = timeout
+                    .as_ref()
+                    .map(|b| self.estimate_block_cost(b))
+                    .unwrap_or(0);
+
+                let target_clock =
+                    original_clock + 1 + case_max_cost.max(timeout_cost);
+                let branch = self.get_branch_mut(branch_id)?;
+                if branch.local_clock < target_clock {
+                    let padding = target_clock - branch.local_clock;
+                    branch.local_clock += padding;
+                    branch.consume_budget(padding)?;
+                }
+            }
+            Statement::MatchEntropy {
+                target,
+                valid_branch,
+                decayed_branch,
+                consumed_branch,
+            } => {
+                let status = {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    branch
+                        .arena
+                        .bindings
+                        .get(target)
+                        .cloned()
+                        .unwrap_or(EntropicState::Consumed)
+                };
+
+                let selected = match status {
+                    EntropicState::Valid(_) => valid_branch.as_ref(),
+                    EntropicState::Decayed(_) => decayed_branch.as_ref(),
+                    EntropicState::Consumed => None,
+                };
+
+                if let Some((binding, body)) = selected {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    if let Some(payload) = branch.arena.consume(target).ok() {
+                        branch.arena.insert(
+                            binding.clone(),
+                            EntropicState::Valid(payload),
+                        )?;
+                    }
+                    for stmt in body {
+                        self.execute_statement(branch_id, stmt)?;
+                    }
+                } else if matches!(status, EntropicState::Consumed) {
+                    if let Some(body) = consumed_branch {
+                        for stmt in body {
+                            self.execute_statement(branch_id, stmt)?;
+                        }
+                    }
+                }
+            }
             Statement::If {
                 condition,
                 then_branch,
@@ -1093,6 +1202,38 @@ impl Vm {
                     .estimate_block_cost(fallback.as_ref().unwrap_or(&Vec::new()));
                 let body_cost = self.estimate_block_cost(body);
                 1 + body_cost + fallback_cost
+            }
+            Statement::Select { cases, timeout, .. } => {
+                let case_max_cost = cases
+                    .iter()
+                    .map(|c| self.estimate_block_cost(&c.body))
+                    .max()
+                    .unwrap_or(0);
+                let timeout_cost = timeout
+                    .as_ref()
+                    .map(|b| self.estimate_block_cost(b))
+                    .unwrap_or(0);
+                1 + case_max_cost.max(timeout_cost)
+            }
+            Statement::MatchEntropy {
+                valid_branch,
+                decayed_branch,
+                consumed_branch,
+                ..
+            } => {
+                let valid_cost = valid_branch
+                    .as_ref()
+                    .map(|(_, body)| self.estimate_block_cost(body))
+                    .unwrap_or(0);
+                let decayed_cost = decayed_branch
+                    .as_ref()
+                    .map(|(_, body)| self.estimate_block_cost(body))
+                    .unwrap_or(0);
+                let consumed_cost = consumed_branch
+                    .as_ref()
+                    .map(|body| self.estimate_block_cost(body))
+                    .unwrap_or(0);
+                1 + valid_cost.max(decayed_cost).max(consumed_cost)
             }
             Statement::Collapse => 0,
             Statement::SplitMap { .. } => 1,

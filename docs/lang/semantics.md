@@ -36,10 +36,12 @@ ICTL tracks value state explicitly:
 ## Speculation (`speculate` / `fallback` / `collapse`)
 
 - `speculate (max Nms) { ... } fallback { ... }` creates a temporary micro-timeline.
-- `speculation_mode(selective|full)` sets how successful speculative commits are merged (`selective` default).
+- `speculation_mode(selective|full)` sets how successful speculative commits are merged (selective default).
 - Speculative body runs isolated using cloned arena and local_clock.
 - `commit` inside speculative body marks success; `collapse` or exceeded max causes failure and fallback.
 - On success, the parent branch can merge full child state or selective commit fields depending on runtime mode (`SpeculationCommitMode`).
+- `select (max Nms) { ... }` performs bounded channel race with deterministic padding and optional `timeout` path.
+- `match entropy(x) { ... }` routes based on value state (`Valid` / `Decayed` / `Consumed`).
 - VM time is padded to `max Nms + fallback_wcet` for deterministic cost.
 
 ## Notes for implementers

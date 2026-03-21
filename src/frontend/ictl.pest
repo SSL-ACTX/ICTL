@@ -25,6 +25,8 @@ statement = {
     | speculate_stmt
     | collapse_stmt
     | speculation_mode_stmt
+    | select_stmt
+    | match_entropy_stmt
     | if_stmt
     | break_stmt
     | loop_stmt
@@ -44,6 +46,13 @@ fallback_stmt = { "fallback" ~ "{" ~ statement* ~ "}" }
 collapse_stmt = { "collapse" }
 speculation_mode_stmt = { "speculation_mode" ~ "(" ~ speculation_mode_value ~ ")" }
 speculation_mode_value = { "selective" | "full" }
+
+select_stmt = { "select" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ select_case* ~ timeout_clause? ~ "}" ~ ("reconcile" ~ "(" ~ resolution_rules ~ ")")? }
+select_case = { "case" ~ identifier ~ "=" ~ expression ~ ":" ~ statement_block }
+timeout_clause = { "timeout" ~ ":" ~ statement_block }
+
+match_entropy_stmt = { "match" ~ "entropy" ~ "(" ~ identifier ~ ")" ~ "{" ~ entropy_branch* ~ "}" }
+entropy_branch = { "Valid" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Decayed" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Consumed" ~ ":" ~ statement_block }
 
 break_stmt = { "break" }
 
