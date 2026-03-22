@@ -257,6 +257,7 @@ pub(crate) fn execute_statement_inner(
                     return Err(TemporalError::BudgetExhausted);
                 }
                 branch.cpu_budget_ms = cpu;
+                branch.slice_ms = Some(cpu);
             }
 
             for inner_stmt in &block.body {
@@ -265,6 +266,78 @@ pub(crate) fn execute_statement_inner(
 
             let branch = vm.get_branch_mut(branch_id)?;
             branch.manifest_stack.pop();
+        }
+        Statement::Slice { milliseconds } => {
+            let branch = vm.get_branch_mut(branch_id)?;
+            branch.slice_ms = Some(*milliseconds);
+            if *milliseconds < branch.cpu_budget_ms {
+                // Preserve absolute CPU budget but mark fixed slice.
+                branch.cpu_budget_ms = *milliseconds;
+            }
+        }
+        Statement::LoopTick { body } => {
+            let slice_ms = {
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch
+                    .slice_ms
+                    .or_else(|| Some(branch.cpu_budget_ms))
+                    .ok_or_else(|| TemporalError::InvalidLoopBudget)?
+            };
+
+            {
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch.loop_depth += 1;
+            }
+
+            let mut iterations = 0;
+
+            loop {
+                let iter_start = vm.get_branch_mut(branch_id)?.local_clock;
+                let mut broke = false;
+
+                for stmt in body {
+                    vm.execute_statement(branch_id, stmt)?;
+                    if vm.get_branch_mut(branch_id)?.break_requested {
+                        broke = true;
+                        break;
+                    }
+                }
+
+                let branch = vm.get_branch_mut(branch_id)?;
+                let body_cost = branch.local_clock.saturating_sub(iter_start);
+
+                if body_cost > slice_ms {
+                    return Err(TemporalError::WatchdogBite(
+                        branch_id.to_string(),
+                        slice_ms,
+                    ));
+                }
+
+                let pad = slice_ms.saturating_sub(body_cost);
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch.local_clock += pad;
+
+                vm.commit_tick_buffers();
+
+                if broke {
+                    let branch = vm.get_branch_mut(branch_id)?;
+                    branch.break_requested = false;
+                    break;
+                }
+
+                iterations += 1;
+                if iterations > 1000 {
+                    return Err(TemporalError::WatchdogBite(
+                        branch_id.to_string(),
+                        slice_ms,
+                    ));
+                }
+            }
+
+            let branch = vm.get_branch_mut(branch_id)?;
+            if branch.loop_depth > 0 {
+                branch.loop_depth -= 1;
+            }
         }
         Statement::RoutineDef {
             name,
@@ -412,19 +485,36 @@ pub(crate) fn execute_statement_inner(
         Statement::ChannelOpen { name, capacity } => {
             vm.channels
                 .insert(name.clone(), VecDeque::with_capacity(*capacity));
+            vm.pending_channels
+                .insert(name.clone(), VecDeque::with_capacity(*capacity));
         }
         Statement::ChannelSend { chan_id, value_id } => {
             let payload = {
                 let branch = vm.get_branch_mut(branch_id)?;
                 branch.arena.consume(value_id)?
             };
-            let chan = vm.channels.get_mut(chan_id).ok_or_else(|| {
-                TemporalError::ChannelFault(format!(
-                    "Channel not found: {}",
-                    chan_id
-                ))
-            })?;
-            chan.push_back(payload);
+            let isochronous = vm
+                .get_branch_mut(branch_id)?
+                .slice_ms
+                .is_some();
+
+            if isochronous {
+                let pending = vm.pending_channels.get_mut(chan_id).ok_or_else(|| {
+                    TemporalError::ChannelFault(format!(
+                        "Channel not found: {}",
+                        chan_id
+                    ))
+                })?;
+                pending.push_back(payload);
+            } else {
+                let chan = vm.channels.get_mut(chan_id).ok_or_else(|| {
+                    TemporalError::ChannelFault(format!(
+                        "Channel not found: {}",
+                        chan_id
+                    ))
+                })?;
+                chan.push_back(payload);
+            }
         }
         Statement::Select {
             max_ms: _,

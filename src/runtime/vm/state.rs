@@ -34,6 +34,7 @@ pub struct Vm {
     pub active_branches: HashMap<String, Timeline>,
     pub capability_handlers: HashMap<String, CapHandler>,
     pub channels: HashMap<String, VecDeque<Payload>>,
+    pub pending_channels: HashMap<String, VecDeque<Payload>>,
     pub routines: HashMap<String, Routine>,
     pub(crate) speculation_stack: Vec<SpeculationContext>,
 }
@@ -46,6 +47,7 @@ pub struct Timeline {
     pub local_clock: u64,
     pub arena: Arena,
     pub cpu_budget_ms: u64,
+    pub slice_ms: Option<u64>,
     pub anchors: HashMap<String, AnchorPoint>,
     pub commit_horizon_passed: bool,
     pub manifest_stack: Vec<Manifest>,

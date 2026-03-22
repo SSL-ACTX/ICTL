@@ -25,7 +25,10 @@ ICTL tracks value state explicitly:
 - Each timeline (`Timeline`) has:
   - `local_clock` (ms time visited)
   - `cpu_budget_ms` (available CPU ticks)
+  - `slice_ms` (fixed tick slice for `loop tick`)
   - `arena` (entropic values states)
+- `slice` in an isolate sets `slice_ms` and enables `loop tick` usage.
+- `loop tick` runs a body that must obey `slice_ms` cost; runtime pads to slice budget and commits double-buffered channel sends.
 - `split` creates child timelines by cloning parent state.
 - `merge` recombines child semantics into target based on explicit resolutions.
 - `if` / `else` performs speculative path evaluation and then merges final state.

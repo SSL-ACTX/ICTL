@@ -1,7 +1,7 @@
 @0ms: {
   isolate promise_worker {
     enable cpu(100ms)
-    enable memory(64MB)
+    enable memory(50KB)
     require System.Log
 
     let ds = defer System.NetworkFetch(url="api.data", latency="20") deadline 50ms

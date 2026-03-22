@@ -102,6 +102,8 @@ impl Vm {
             Statement::Yield(_) => 0,
             Statement::RoutineDef { taking_ms, .. } => taking_ms.unwrap_or(0),
             Statement::Loop { max_ms, .. } => *max_ms,
+            Statement::LoopTick { .. } => 1,
+            Statement::Slice { .. } => 0,
             Statement::SpeculationMode(_) => 0,
             Statement::Await(_) => 1,
             Statement::Break => 0,

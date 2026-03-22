@@ -1,0 +1,28 @@
+@0ms: {
+  isolate hft_pipeline {
+    enable memory(50KB)
+    slice 20ms
+    open_chan signal_bus(8)
+
+    // Tick 1: market reader produces latest price signal
+    loop tick {
+      let price = 123
+      chan_send signal_bus(price)
+      break
+    }
+
+    // Tick 2: strategy consumer processes the previous tick's signal
+    loop tick {
+      let signal = chan_recv(signal_bus)
+      let out = signal
+      break
+    }
+
+    // Tick 3: publish execution outcome
+    loop tick {
+      let result = out
+      print(result)
+      break
+    }
+  }
+}

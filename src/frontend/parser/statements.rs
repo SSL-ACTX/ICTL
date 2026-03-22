@@ -143,6 +143,14 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 .unwrap_or(1);
             Statement::ChannelOpen { name, capacity }
         }
+        Rule::slice_stmt => {
+            let amount = pair
+                .into_inner()
+                .next()
+                .and_then(|p| p.as_str().parse::<u64>().ok())
+                .unwrap_or(0);
+            Statement::Slice { milliseconds: amount }
+        }
         Rule::chan_send_stmt => {
             let mut inner = pair.into_inner();
             let chan_id = inner
@@ -687,21 +695,50 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
         }
         Rule::loop_stmt => {
             let mut inner = pair.into_inner();
-            let max_value = inner
-                .next()
-                .and_then(|p| p.as_str().parse::<u64>().ok())
-                .unwrap_or(0);
-            let mut body = Vec::new();
-            for stmt_pair in inner {
-                if stmt_pair.as_rule() == Rule::statement {
-                    if let Some(actual_stmt) = stmt_pair.into_inner().next() {
-                        body.push(parse_statement(actual_stmt));
+            let first = inner.next();
+            if let Some(first) = first {
+                if first.as_rule() == Rule::amount {
+                    let max_value = first.as_str().parse::<u64>().unwrap_or(0);
+                    let mut body = Vec::new();
+                    for stmt_pair in inner {
+                        if stmt_pair.as_rule() == Rule::statement {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                                body.push(parse_statement(actual_stmt));
+                            }
+                        }
                     }
+                    Statement::Loop {
+                        max_ms: max_value,
+                        body,
+                    }
+                } else {
+                    // loop tick
+                    let mut body = Vec::new();
+                    if first.as_rule() == Rule::statement_block {
+                        for stmt_pair in first.into_inner() {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                                body.push(parse_statement(actual_stmt));
+                            }
+                        }
+                    } else if first.as_rule() == Rule::statement {
+                        if let Some(actual_stmt) = first.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    }
+                    for stmt_pair in inner {
+                        if stmt_pair.as_rule() == Rule::statement {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                                body.push(parse_statement(actual_stmt));
+                            }
+                        }
+                    }
+                    Statement::LoopTick { body }
                 }
-            }
-            Statement::Loop {
-                max_ms: max_value,
-                body,
+            } else {
+                Statement::Loop {
+                    max_ms: 0,
+                    body: Vec::new(),
+                }
             }
         }
         Rule::yield_stmt => {
@@ -785,8 +822,14 @@ fn parse_manifest(pair: Pair<Rule>) -> Manifest {
                     "memory" => manifest.memory_budget_bytes = Some(amount),
                     _ => {}
                 }
-            }
-            Rule::require_decl => manifest.capabilities.push(parse_capability(item)),
+            }            Rule::slice_decl => {
+                let amount = item
+                    .into_inner()
+                    .next()
+                    .map(|p| p.as_str().parse::<u64>().unwrap_or(0))
+                    .unwrap_or(0);
+                manifest.cpu_budget_ms = Some(amount);
+            }            Rule::require_decl => manifest.capabilities.push(parse_capability(item)),
             _ => {}
         }
     }

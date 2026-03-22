@@ -153,10 +153,37 @@ pub(crate) fn analyze_statement(
                     .annotate(SemanticErrorKind::UseAfterConsume(target.clone())));
             }
         }
+        Statement::Slice { milliseconds } => {
+            analyzer.current_slice_ms = Some(*milliseconds);
+        }
         Statement::Loop { max_ms, body } => {
             if *max_ms == 0 {
                 return Err(analyzer.annotate(SemanticErrorKind::InvalidLoopBudget));
             }
+            for inner_stmt in body {
+                analyze_statement(analyzer, inner_stmt)?;
+            }
+        }
+        Statement::LoopTick { body } => {
+            let slice_ms = analyzer
+                .current_slice_ms
+                .ok_or_else(|| analyzer.annotate(SemanticErrorKind::TickLoopWithoutSlice))?;
+
+            let body_cost = crate::analysis::statement::estimate_block_cost(analyzer, body);
+            if body_cost > slice_ms {
+                return Err(analyzer.annotate(
+                    SemanticErrorKind::TickLoopBudgetExceeded(body_cost, slice_ms),
+                ));
+            }
+
+            let has_break = body.iter().any(|inner_stmt| {
+                matches!(inner_stmt.stmt, Statement::Break)
+            });
+
+            if !has_break {
+                return Err(analyzer.annotate(SemanticErrorKind::TickLoopNeedsBreak));
+            }
+
             for inner_stmt in body {
                 analyze_statement(analyzer, inner_stmt)?;
             }
@@ -168,10 +195,14 @@ pub(crate) fn analyze_statement(
             }
             analyzer.capability_stack.push(cap_set);
 
+            let previous_slice = analyzer.current_slice_ms;
+            analyzer.current_slice_ms = block.manifest.cpu_budget_ms;
+
             for inner_stmt in &block.body {
                 analyze_statement(analyzer, inner_stmt)?;
             }
 
+            analyzer.current_slice_ms = previous_slice;
             analyzer.capability_stack.pop();
         }
         Statement::RoutineDef {
@@ -732,6 +763,8 @@ pub(crate) fn estimate_statement_cost(
         Statement::SplitMap { .. } => 1,
         Statement::Yield(_) => 0,
         Statement::Loop { max_ms, .. } => *max_ms,
+        Statement::LoopTick { .. } => 1,
+        Statement::Slice { .. } => 0,
         Statement::Await(_) => 1,
         Statement::SpeculationMode(_) => 0,
         Statement::Break => 0,

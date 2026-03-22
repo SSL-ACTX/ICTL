@@ -19,6 +19,7 @@ impl Vm {
             active_branches: HashMap::new(),
             capability_handlers: HashMap::new(),
             channels: HashMap::new(),
+            pending_channels: HashMap::new(),
             routines: HashMap::new(),
             speculation_stack: Vec::new(),
             speculative_commit_mode: SpeculationCommitMode::Selective,
@@ -98,6 +99,7 @@ impl Vm {
                 local_clock: 0,
                 arena: base_arena.clone(),
                 cpu_budget_ms,
+                slice_ms: None,
                 anchors: HashMap::new(),
                 commit_horizon_passed: false,
                 manifest_stack: Vec::new(),
@@ -179,6 +181,14 @@ impl Vm {
         Ok(())
     }
 
+    pub fn commit_tick_buffers(&mut self) {
+        for (name, pending) in self.pending_channels.iter_mut() {
+            if let Some(chan) = self.channels.get_mut(name) {
+                chan.append(pending);
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn terminate_branch(
         &mut self,
@@ -246,6 +256,7 @@ impl Timeline {
             local_clock: 0,
             arena: Arena::new(memory_capacity),
             cpu_budget_ms: u64::MAX,
+            slice_ms: None,
             anchors: HashMap::new(),
             commit_horizon_passed: false,
             manifest_stack: Vec::new(),

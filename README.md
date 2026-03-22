@@ -34,6 +34,7 @@
 * **Channels:** Destructive message passing across timelines utilizing `open_chan`, `chan_send`, and `chan_recv`.
 * **Watchdogs & Anchors:** Monitors can reset failing branches to prior anchors (acausal resets) to dynamically recover temporal computations.
 * **Paced Iteration (`for` + `split_map`):** New iteration primitives support explicit entropic collection semantics, deterministic timing via `pacing`, and scatter-gather parallel execution with `split_map`.
+* **Isochronous schedule (`slice` + `loop tick`):** Fixed tick windows with pre-checked WCET in analysis and deterministic double-buffered channel phase semantics.
 * **Promises (`defer` / `await`):** Asynchronous-style deferred effects are modeled with explicit `Pending` values in the entropic arena; `await` resolves or times out, while `match entropy(...)` handles pending/valid/consumed states.
 * **Conditional Branching (`if` / `else`):** Explicit path reconciliation is required when branches consume shared values.
 * **Speculative Branching (`speculate` / `fallback` / `collapse`):** Optimize safe trial computations with rollback and explicit commit controls; can be configured via `speculation_mode(selective|full)`.

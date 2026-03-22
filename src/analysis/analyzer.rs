@@ -18,6 +18,12 @@ pub enum SemanticErrorKind {
     EntropyMismatch(String),
     #[error("Invalid 'loop' budget: max must be >0")]
     InvalidLoopBudget,
+    #[error("Tick loop requires a fixed slice via slice <N>ms")]
+    TickLoopWithoutSlice,
+    #[error("Tick loop body cost {0}ms exceeds slice budget {1}ms")]
+    TickLoopBudgetExceeded(u64, u64),
+    #[error("Tick loop must include a break statement")]
+    TickLoopNeedsBreak,
     #[error("Routine temporal contract violated: {0} requires {1}ms but body costs {2}ms")]
     RoutineBudgetExceeded(String, u64, u64),
     #[error("Pacing violation: loop body exceeds pacing window")]
@@ -79,6 +85,7 @@ pub struct EntropicAnalyzer {
     pub(crate) current_statement: Option<String>,
     pub(crate) current_span: Option<crate::frontend::ast::Span>,
     pub(crate) inspection_depth: usize,
+    pub(crate) current_slice_ms: Option<u64>,
     pub(crate) source: Option<String>,
     pub(crate) filename: Option<String>,
     pub(crate) capability_stack: Vec<HashSet<String>>,
@@ -96,11 +103,12 @@ impl EntropicAnalyzer {
             current_branch: "main".to_string(),
             current_statement: None,
             current_span: None,
+            inspection_depth: 0,
+            current_slice_ms: None,
             source: None,
             filename: None,
             capability_stack: Vec::new(),
             routines: HashMap::new(),
-            inspection_depth: 0,
         }
     }
 

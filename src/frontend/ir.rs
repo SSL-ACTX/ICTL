@@ -13,7 +13,9 @@ pub struct IrBlock {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrInstruction {
-    pub text: String,
+    pub op: String,
+    pub args: Vec<String>,
+    pub indent: usize,
 }
 
 impl std::fmt::Display for IrProgram {
@@ -21,7 +23,9 @@ impl std::fmt::Display for IrProgram {
         for block in &self.blocks {
             writeln!(f, "@{:?}:", block.time)?;
             for instr in &block.instructions {
-                writeln!(f, "  {}", instr.text)?;
+                let padding = " ".repeat(instr.indent);
+                let args = instr.args.join(" ");
+                writeln!(f, "{}{} {}", padding, instr.op, args.trim())?;
             }
         }
         Ok(())
@@ -37,14 +41,104 @@ pub fn lower_program(program: &Program) -> IrProgram {
             instructions: t
                 .statements
                 .iter()
-                .map(|stmt| IrInstruction {
-                    text: lower_statement(&stmt.stmt),
-                })
+                .flat_map(|stmt| lower_statement_lines(&stmt.stmt, 2))
                 .collect(),
         })
         .collect();
 
     IrProgram { blocks }
+}
+
+fn lower_statement_lines(stmt: &Statement, indent: usize) -> Vec<IrInstruction> {
+    let indent = indent;
+
+    match stmt {
+        Statement::Isolate(block) => {
+            let mut ins = Vec::new();
+            let name = block.name.as_deref().unwrap_or("<anon>");
+            ins.push(IrInstruction {
+                op: "ISOLATE".to_string(),
+                args: vec![name.to_string()],
+                indent,
+            });
+            for inner in &block.body {
+                ins.extend(lower_statement_lines(&inner.stmt, indent + 2));
+            }
+            ins.push(IrInstruction {
+                op: "END_ISOLATE".to_string(),
+                args: vec![],
+                indent,
+            });
+            ins
+        }
+        Statement::LoopTick { body } => {
+            let mut ins = Vec::new();
+            ins.push(IrInstruction {
+                op: "LOOP_TICK".to_string(),
+                args: vec![],
+                indent,
+            });
+            for inner in body {
+                ins.extend(lower_statement_lines(&inner.stmt, indent + 2));
+            }
+            ins.push(IrInstruction {
+                op: "END_LOOP_TICK".to_string(),
+                args: vec![],
+                indent,
+            });
+            ins
+        }
+        Statement::Slice { milliseconds } => vec![IrInstruction {
+            op: "SLICE".to_string(),
+            args: vec![milliseconds.to_string()],
+            indent,
+        }],
+        Statement::ChannelOpen { name, capacity } => vec![IrInstruction {
+            op: "OPEN_CHAN".to_string(),
+            args: vec![name.clone(), capacity.to_string()],
+            indent,
+        }],
+        Statement::ChannelSend { chan_id, value_id } => vec![IrInstruction {
+            op: "CHAN_SEND".to_string(),
+            args: vec![chan_id.clone(), value_id.clone()],
+            indent,
+        }],
+        Statement::Assignment { target, expr } => vec![IrInstruction {
+            op: "ASSIGN".to_string(),
+            args: vec![target.clone(), lower_expression(expr)],
+            indent,
+        }],
+        Statement::Break => vec![IrInstruction {
+            op: "BREAK".to_string(),
+            args: vec![],
+            indent,
+        }],
+        Statement::Print(expr) => vec![IrInstruction {
+            op: "PRINT".to_string(),
+            args: vec![lower_expression(expr)],
+            indent,
+        }],
+        Statement::Await(target) => vec![IrInstruction {
+            op: "AWAIT".to_string(),
+            args: vec![target.clone()],
+            indent,
+        }],
+        Statement::If { condition, .. } => vec![IrInstruction {
+            op: "IF".to_string(),
+            args: vec![lower_expression(condition)],
+            indent,
+        }],
+        Statement::Select { max_ms, .. } => vec![IrInstruction {
+            op: "SELECT".to_string(),
+            args: vec![max_ms.to_string()],
+            indent,
+        }],
+        _ => vec![IrInstruction {
+            op: lower_statement(stmt),
+            args: vec![],
+            indent,
+        }],
+    }
 }
 
 fn lower_statement(stmt: &Statement) -> String {
@@ -195,6 +289,10 @@ fn lower_statement(stmt: &Statement) -> String {
         }
         Statement::Loop { max_ms, .. } => {
             format!("loop (max {}ms) {{ ... }}", max_ms)
+        }
+        Statement::LoopTick { .. } => "loop tick { ... }".to_string(),
+        Statement::Slice { milliseconds } => {
+            format!("slice {}ms", milliseconds)
         }
         Statement::Speculate { max_ms, .. } => {
             format!("speculate (max {}ms) {{ ... }}", max_ms)

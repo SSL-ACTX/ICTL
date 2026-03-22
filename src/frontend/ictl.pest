@@ -78,12 +78,15 @@ max_opt = { "(" ~ "max" ~ amount ~ "ms" ~ ")" }
 debug_stmt = { ("debug" | "log") ~ "(" ~ expression ~ ")" }
 
 if_stmt = { "if" ~ "(" ~ expression ~ ")" ~ statement_block ~ ("else" ~ statement_block)? ~ reconcile_clause? }
-loop_stmt = { "loop" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ statement* ~ "}" }
+loop_stmt = { "loop" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ statement* ~ "}" | "loop" ~ "tick" ~ "{" ~ statement* ~ "}" }
+
+slice_stmt = { "slice" ~ amount ~ "ms" }
 
 network_request_stmt = { "network_request" ~ string_literal }
 
 isolate_stmt = { "isolate" ~ identifier? ~ "{" ~ manifest ~ statement* ~ "}" }
-manifest     = { (resource_decl | require_decl)* }
+manifest     = { (resource_decl | require_decl | slice_decl)* }
+slice_decl   = { "slice" ~ amount ~ "ms" }
 resource_decl = { "enable" ~ identifier ~ "(" ~ amount ~ unit? ~ ")" }
 amount       = @{ ASCII_DIGIT+ }
 unit         = { "ms" | "KB" | "MB" | "bytes" }

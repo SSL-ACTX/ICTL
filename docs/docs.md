@@ -14,6 +14,7 @@ This is the top-level language documentation landing page.
 - [Entropic garbage collection (GC)](lang/gc.md)
 - [Routines (`routine` / `call`)](lang/routines.md)
 - [Promises (`defer` / `await`)](lang/promises.md)
+- [Isochronous Matrix / Slice + Tick](lang/isochronous_matrix.md)
 
 ## How to use
 

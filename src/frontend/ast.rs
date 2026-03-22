@@ -128,6 +128,12 @@ pub enum Statement {
         max_ms: u64,
         body: Vec<SpannedStatement>,
     },
+    LoopTick {
+        body: Vec<SpannedStatement>,
+    },
+    Slice {
+        milliseconds: u64,
+    },
     For {
         item_name: String,
         mode: ForMode,

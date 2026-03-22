@@ -85,6 +85,33 @@ speculate (max 10ms) {
   - `Selective` (default): only explicit commit values move up
   - `Full`: entire speculative child state merges into parent (configured with VM option).
 
+### `slice` and `loop tick`
+
+```ictl
+@0ms: {
+  isolate fast {
+    slice 5ms
+    open_chan c(1)
+
+    loop tick {
+      let v = 42
+      chan_send c(v)
+      break
+    }
+
+    loop tick {
+      let x = chan_recv(c)
+      print(x)
+      break
+    }
+  }
+}
+```
+
+- `slice Nms` is an isolate-level timing contract.
+- `loop tick { ... }` executes inline for one tick and pads local_clock to full slice.
+- `chan_send` inside tick uses phase 0 pending buffer; `chan_recv` reads phase 1 committed data.
+
 ### `select` / `timeout`
 
 ```ictl
