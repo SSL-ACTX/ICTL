@@ -3,6 +3,8 @@ use crate::frontend::ast::*;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
+use crate::analysis::{expression, statement};
+
 #[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum SemanticErrorKind {
@@ -55,9 +57,7 @@ impl std::fmt::Display for SemanticError {
             }
         }
 
-        write!(f, "   |\n   = note: branch '{}'\n", self.branch)?;
-
-        Ok(())
+        write!(f, "   |\n   = note: branch '{}'\n", self.branch)
     }
 }
 
@@ -68,28 +68,29 @@ impl std::error::Error for SemanticError {
 }
 
 #[derive(Clone, Default)]
-struct BranchState {
-    consumed: HashSet<String>,
-    yields: HashSet<String>, // Variables produced or re-assigned in this branch
+pub(crate) struct BranchState {
+    pub consumed: HashSet<String>,
+    pub yields: HashSet<String>,
 }
 
 pub struct EntropicAnalyzer {
-    // Tracks the entropic state of every active timeline branch
-    branch_contexts: HashMap<String, BranchState>,
-    current_branch: String,
-    current_statement: Option<String>,
-    current_span: Option<crate::frontend::ast::Span>,
-    inspection_depth: usize,
-    source: Option<String>,
-    filename: Option<String>,
-    capability_stack: Vec<HashSet<String>>,
-    routines: HashMap<String, (Vec<(crate::frontend::ast::ParamMode, String)>, u64)>,
+    pub(crate) branch_contexts: HashMap<String, BranchState>,
+    pub(crate) current_branch: String,
+    pub(crate) current_statement: Option<String>,
+    pub(crate) current_span: Option<crate::frontend::ast::Span>,
+    pub(crate) inspection_depth: usize,
+    pub(crate) source: Option<String>,
+    pub(crate) filename: Option<String>,
+    pub(crate) capability_stack: Vec<HashSet<String>>,
+    pub(crate) routines:
+        HashMap<String, (Vec<(crate::frontend::ast::ParamMode, String)>, u64)>,
 }
 
 impl EntropicAnalyzer {
     pub fn new() -> Self {
         let mut contexts = HashMap::new();
         contexts.insert("main".to_string(), BranchState::default());
+
         Self {
             branch_contexts: contexts,
             current_branch: "main".to_string(),
@@ -117,7 +118,7 @@ impl EntropicAnalyzer {
         result
     }
 
-    fn annotate(&self, kind: SemanticErrorKind) -> SemanticError {
+    pub(crate) fn annotate(&self, kind: SemanticErrorKind) -> SemanticError {
         let (line, column) =
             if let (Some(span), Some(src)) = (&self.current_span, &self.source) {
                 let before = &src[..span.start];
@@ -142,7 +143,7 @@ impl EntropicAnalyzer {
         }
     }
 
-    fn is_capability_allowed(&self, cap: &str) -> bool {
+    pub(crate) fn is_capability_allowed(&self, cap: &str) -> bool {
         self.capability_stack
             .iter()
             .rev()
@@ -154,7 +155,6 @@ impl EntropicAnalyzer {
         program: &Program,
     ) -> Result<(), SemanticError> {
         for block in &program.timelines {
-            // Root-level blocks typically start in the context specified by the timeline block
             let old_branch = self.current_branch.clone();
             if let TimeCoordinate::Branch(id) = &block.time {
                 self.current_branch = id.clone();
@@ -177,911 +177,34 @@ impl EntropicAnalyzer {
 
     fn analyze_statement(
         &mut self,
-        stmt: &crate::frontend::ast::SpannedStatement,
+        stmt: &SpannedStatement,
     ) -> Result<(), SemanticError> {
-        match &stmt.stmt {
-            Statement::RelativisticBlock { time, body } => {
-                let old_branch = self.current_branch.clone();
-                // If the block specifies a branch, shift the analyzer's focus
-                if let TimeCoordinate::Branch(id) = time {
-                    self.current_branch = id.clone();
-                }
-
-                for inner_stmt in body {
-                    self.analyze_statement(inner_stmt)?;
-                }
-
-                self.current_branch = old_branch;
-            }
-            Statement::Watchdog { recovery, .. } => {
-                // Analyze recovery statements in the current monitor branch context
-                for inner_stmt in recovery {
-                    self.analyze_statement(inner_stmt)?;
-                }
-            }
-            Statement::If {
-                condition,
-                then_branch,
-                else_branch,
-                reconcile,
-            } => {
-                self.analyze_expression(condition)?;
-
-                let original_state = self
-                    .branch_contexts
-                    .get(&self.current_branch)
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Simulate then-branch
-                let then_state = original_state.clone();
-                let mut then_contexts = self.branch_contexts.clone();
-                then_contexts
-                    .insert(self.current_branch.clone(), then_state.clone());
-                let previous_contexts =
-                    std::mem::replace(&mut self.branch_contexts, then_contexts);
-
-                for inner_stmt in then_branch {
-                    self.analyze_statement(inner_stmt)?;
-                }
-                let then_end_state = self
-                    .branch_contexts
-                    .get(&self.current_branch)
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Simulate else-branch
-                self.branch_contexts = previous_contexts.clone();
-                let else_state = original_state.clone();
-                let mut else_contexts = self.branch_contexts.clone();
-                else_contexts
-                    .insert(self.current_branch.clone(), else_state.clone());
-                self.branch_contexts = else_contexts;
-
-                if let Some(else_branch) = else_branch {
-                    for inner_stmt in else_branch {
-                        self.analyze_statement(inner_stmt)?;
-                    }
-                }
-                let else_end_state = self
-                    .branch_contexts
-                    .get(&self.current_branch)
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Determine entropy mismatches
-                let mut mismatch_vars = Vec::new();
-                for name in then_end_state
-                    .consumed
-                    .union(&else_end_state.consumed)
-                    .cloned()
-                {
-                    let in_then = then_end_state.consumed.contains(&name);
-                    let in_else = else_end_state.consumed.contains(&name);
-                    if in_then != in_else {
-                        mismatch_vars.push(name);
-                    }
-                }
-
-                if !mismatch_vars.is_empty() {
-                    if let Some(reconcile_rules) = reconcile {
-                        if !reconcile_rules.auto {
-                            for name in &mismatch_vars {
-                                if !reconcile_rules.rules.contains_key(name) {
-                                    return Err(self.annotate(
-                                        SemanticErrorKind::EntropyMismatch(
-                                            mismatch_vars.join(", "),
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                    } else {
-                        return Err(self.annotate(
-                            SemanticErrorKind::EntropyMismatch(
-                                mismatch_vars.join(", "),
-                            ),
-                        ));
-                    }
-                }
-
-                // Merge contexts conservatively: consumed union and yields union
-                let merged_state = BranchState {
-                    consumed: then_end_state
-                        .consumed
-                        .union(&else_end_state.consumed)
-                        .cloned()
-                        .collect(),
-                    yields: then_end_state
-                        .yields
-                        .union(&else_end_state.yields)
-                        .cloned()
-                        .collect(),
-                };
-
-                self.branch_contexts = previous_contexts;
-                self.branch_contexts
-                    .insert(self.current_branch.clone(), merged_state);
-            }
-            Statement::Inspect { target: _, body } => {
-                // Non-destructive view: preserve parent context after block.
-                let snapshot = self
-                    .branch_contexts
-                    .get(&self.current_branch)
-                    .cloned()
-                    .unwrap_or_default();
-
-                self.inspection_depth += 1;
-                for inner_stmt in body {
-                    self.analyze_statement(inner_stmt)?;
-                }
-                self.inspection_depth -= 1;
-
-                self.branch_contexts
-                    .insert(self.current_branch.clone(), snapshot);
-            }
-            Statement::Loop { max_ms, body } => {
-                if *max_ms == 0 {
-                    return Err(self.annotate(SemanticErrorKind::InvalidLoopBudget));
-                }
-                for inner_stmt in body {
-                    self.analyze_statement(inner_stmt)?;
-                }
-            }
-            Statement::Isolate(block) => {
-                let mut cap_set = HashSet::new();
-                for cap in &block.manifest.capabilities {
-                    cap_set.insert(cap.path.clone());
-                }
-                self.capability_stack.push(cap_set);
-
-                for inner_stmt in &block.body {
-                    self.analyze_statement(inner_stmt)?;
-                }
-
-                self.capability_stack.pop();
-            }
-            Statement::RoutineDef {
-                name,
-                params,
-                taking_ms,
-                body,
-            } => {
-                // Ensure unique routine name
-                if self.routines.contains_key(name) {
-                    return Err(self.annotate(SemanticErrorKind::EntropyMismatch(
-                        format!("duplicate routine {}", name),
-                    )));
-                }
-
-                // Analyze routine body in isolated context with parameter definitions
-                let mut routine_analyzer = EntropicAnalyzer::new();
-                routine_analyzer.routines = self.routines.clone();
-
-                // Enforce runtime spec constraints inside routines:
-                // no split/merge and no explicit timeline coord blocks.
-                for stmt in body {
-                    match &stmt.stmt {
-                        Statement::Split { .. }
-                        | Statement::Merge { .. }
-                        | Statement::RelativisticBlock { .. } => {
-                            return Err(self.annotate(
-                                SemanticErrorKind::EntropyMismatch(
-                                    "routines cannot contain split/merge/relativistic blocks"
-                                        .to_string(),
-                                ),
-                            ))
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Mark parameters as locally produced values for the routine body.
-                let routine_state =
-                    routine_analyzer.branch_contexts.get_mut("main").unwrap();
-                for (_mode, param_name) in params {
-                    routine_state.yields.insert(param_name.clone());
-                }
-
-                for stmt in body {
-                    routine_analyzer.analyze_statement(stmt)?;
-                }
-
-                // Check subroutine timing budget conservatively.
-                let estimated_cost = self.estimate_block_cost(body);
-                let final_taking_ms = if let Some(ms) = *taking_ms {
-                    if estimated_cost > ms {
-                        return Err(self.annotate(
-                            SemanticErrorKind::RoutineBudgetExceeded(
-                                name.clone(),
-                                ms,
-                                estimated_cost,
-                            ),
-                        ));
-                    }
-                    ms
-                } else {
-                    estimated_cost
-                };
-
-                self.routines
-                    .insert(name.clone(), (params.clone(), final_taking_ms));
-            }
-            Statement::Assignment { target, expr } => {
-                self.analyze_expression(expr)?;
-                let state =
-                    self.branch_contexts.get_mut(&self.current_branch).unwrap();
-
-                // Assigning to a target "revives" it in this timeline
-                state.consumed.remove(target);
-                state.yields.insert(target.clone());
-            }
-            Statement::Split { parent, branches } => {
-                let parent_state = self
-                    .branch_contexts
-                    .get(parent)
-                    .cloned()
-                    .unwrap_or_default();
-
-                for branch in branches {
-                    // MITOSIS: Children inherit the 'consumed' history (causal past)
-                    // but start with zero 'yields' (local production).
-                    self.branch_contexts.insert(
-                        branch.clone(),
-                        BranchState {
-                            consumed: parent_state.consumed.clone(),
-                            yields: HashSet::new(),
-                        },
-                    );
-                }
-                // The split parent identifier itself is consumed by the split operation
-                self.mark_consumed(parent)?;
-            }
-            Statement::Merge {
-                branches,
-                target,
-                resolutions,
-            } => {
-                let mut all_yields = HashSet::new();
-                let mut collisions = HashSet::new();
-
-                for branch_name in branches {
-                    let branch_state =
-                        self.branch_contexts.get(branch_name).ok_or_else(|| {
-                            self.annotate(SemanticErrorKind::CrossBranchViolation(
-                                branch_name.clone(),
-                            ))
-                        })?;
-
-                    for y in &branch_state.yields {
-                        if !all_yields.insert(y.clone()) {
-                            collisions.insert(y.clone());
-                        }
-                    }
-                }
-
-                // Verify every collision has an explicit resolution rule
-                for key in collisions {
-                    if !resolutions.rules.contains_key(&key) {
-                        return Err(
-                            self.annotate(SemanticErrorKind::UnresolvedMerge(key))
-                        );
-                    }
-                }
-
-                let target_state =
-                    self.branch_contexts.entry(target.clone()).or_default();
-                for y in all_yields {
-                    // Merging yields into the target branch revives them
-                    target_state.yields.insert(y.clone());
-                    target_state.consumed.remove(&y);
-                }
-            }
-            Statement::Send { value_id, .. } => {
-                self.mark_consumed(value_id)?;
-            }
-            Statement::ChannelSend { value_id, .. } => {
-                // Sending to a channel is a destructive move
-                self.mark_consumed(value_id)?;
-            }
-            Statement::Break => {
-                // break only affects runtime loop flow, no semantic entropic change
-            }
-            Statement::Select {
-                max_ms: _,
-                cases,
-                timeout,
-                reconcile,
-            } => {
-                let original_state = self
-                    .branch_contexts
-                    .get(&self.current_branch)
-                    .cloned()
-                    .unwrap_or_default();
-
-                let mut branch_results = Vec::new();
-
-                for case in cases {
-                    self.analyze_expression(&case.source)?;
-
-                    let saved_contexts = self.branch_contexts.clone();
-                    let mut branch_contexts = self.branch_contexts.clone();
-                    branch_contexts
-                        .insert(self.current_branch.clone(), original_state.clone());
-                    self.branch_contexts = branch_contexts;
-
-                    // case binding is local to the select branch and not propagated out
-
-                    for stmt in &case.body {
-                        self.analyze_statement(stmt)?;
-                    }
-
-                    let mut end_state = self
-                        .branch_contexts
-                        .get(&self.current_branch)
-                        .cloned()
-                        .unwrap_or_default();
-                    end_state.consumed.remove(&case.binding);
-                    end_state.yields.remove(&case.binding);
-                    branch_results.push(end_state);
-                    self.branch_contexts = saved_contexts;
-                }
-
-                if let Some(timeout_body) = timeout {
-                    let saved_contexts = self.branch_contexts.clone();
-                    let mut branch_contexts = self.branch_contexts.clone();
-                    branch_contexts
-                        .insert(self.current_branch.clone(), original_state.clone());
-                    self.branch_contexts = branch_contexts;
-
-                    for stmt in timeout_body {
-                        self.analyze_statement(stmt)?;
-                    }
-
-                    let end_state = self
-                        .branch_contexts
-                        .get(&self.current_branch)
-                        .cloned()
-                        .unwrap_or_default();
-                    branch_results.push(end_state);
-                    self.branch_contexts = saved_contexts;
-                }
-
-                let merged_state = if branch_results.is_empty() {
-                    original_state.clone()
-                } else {
-                    let mut merged = original_state.clone();
-                    for st in &branch_results {
-                        merged.consumed.extend(st.consumed.clone().into_iter());
-                        merged.yields.extend(st.yields.clone().into_iter());
-                    }
-                    merged
-                };
-
-                // Determine variables that are consumed in some but not all branches (entropy branching mismatch)
-                let all_vars: std::collections::HashSet<_> = branch_results
-                    .iter()
-                    .flat_map(|s| s.consumed.iter().cloned())
-                    .collect();
-
-                let mut mismatch_vars = Vec::new();
-                for var in all_vars {
-                    let in_some =
-                        branch_results.iter().any(|s| s.consumed.contains(&var));
-                    let in_all =
-                        branch_results.iter().all(|s| s.consumed.contains(&var));
-                    if in_some && !in_all {
-                        mismatch_vars.push(var.clone());
-                    }
-                }
-
-                if !mismatch_vars.is_empty() && reconcile.is_none() {
-                    return Err(self.annotate(SemanticErrorKind::EntropyMismatch(
-                        mismatch_vars.join(", "),
-                    )));
-                }
-
-                if let Some(rule) = reconcile {
-                    for var in mismatch_vars {
-                        if !rule.rules.contains_key(&var) {
-                            return Err(self
-                                .annotate(SemanticErrorKind::EntropyMismatch(var)));
-                        }
-                    }
-                }
-
-                self.branch_contexts
-                    .insert(self.current_branch.clone(), merged_state);
-            }
-            Statement::MatchEntropy {
-                target: _target,
-                valid_branch,
-                decayed_branch,
-                consumed_branch,
-            } => {
-                let original_state = self
-                    .branch_contexts
-                    .get(&self.current_branch)
-                    .cloned()
-                    .unwrap_or_default();
-
-                let mut context_candidates = Vec::new();
-
-                if let Some((binding, branch_body)) = valid_branch {
-                    let saved_contexts = self.branch_contexts.clone();
-                    let mut branch_contexts = self.branch_contexts.clone();
-                    branch_contexts
-                        .insert(self.current_branch.clone(), original_state.clone());
-                    self.branch_contexts = branch_contexts;
-
-                    self.branch_contexts
-                        .get_mut(&self.current_branch)
-                        .unwrap()
-                        .yields
-                        .insert(binding.clone());
-
-                    for stmt in branch_body {
-                        self.analyze_statement(stmt)?;
-                    }
-
-                    let end_state = self
-                        .branch_contexts
-                        .get(&self.current_branch)
-                        .cloned()
-                        .unwrap_or_default();
-                    context_candidates.push(end_state);
-                    self.branch_contexts = saved_contexts;
-                }
-
-                if let Some((binding, branch_body)) = decayed_branch {
-                    let saved_contexts = self.branch_contexts.clone();
-                    let mut branch_contexts = self.branch_contexts.clone();
-                    branch_contexts
-                        .insert(self.current_branch.clone(), original_state.clone());
-                    self.branch_contexts = branch_contexts;
-
-                    self.branch_contexts
-                        .get_mut(&self.current_branch)
-                        .unwrap()
-                        .yields
-                        .insert(binding.clone());
-
-                    for stmt in branch_body {
-                        self.analyze_statement(stmt)?;
-                    }
-
-                    let end_state = self
-                        .branch_contexts
-                        .get(&self.current_branch)
-                        .cloned()
-                        .unwrap_or_default();
-                    context_candidates.push(end_state);
-                    self.branch_contexts = saved_contexts;
-                }
-
-                if let Some(branch_body) = consumed_branch {
-                    let saved_contexts = self.branch_contexts.clone();
-                    let mut branch_contexts = self.branch_contexts.clone();
-                    branch_contexts
-                        .insert(self.current_branch.clone(), original_state.clone());
-                    self.branch_contexts = branch_contexts;
-
-                    for stmt in branch_body {
-                        self.analyze_statement(stmt)?;
-                    }
-
-                    let end_state = self
-                        .branch_contexts
-                        .get(&self.current_branch)
-                        .cloned()
-                        .unwrap_or_default();
-                    context_candidates.push(end_state);
-                    self.branch_contexts = saved_contexts;
-                }
-
-                let merged_state = context_candidates.into_iter().fold(
-                    original_state.clone(),
-                    |mut acc, s| {
-                        acc.consumed.extend(s.consumed.into_iter());
-                        acc.yields.extend(s.yields.into_iter());
-                        acc
-                    },
-                );
-
-                self.branch_contexts
-                    .insert(self.current_branch.clone(), merged_state);
-            }
-            Statement::SpeculationMode(_) => {
-                // language-level mode settings affect runtime configuration only
-            }
-            Statement::Expression(expr) => {
-                self.analyze_expression(expr)?;
-            }
-            Statement::Print(expr) | Statement::Debug(expr) => {
-                self.analyze_expression_nonconsuming(expr)?;
-            }
-            Statement::Commit(body) => {
-                for inner_stmt in body {
-                    self.analyze_statement(inner_stmt)?;
-                }
-            }
-            Statement::Yield(_) => {
-                // yields are handled by SplitMap gather semantics
-            }
-            Statement::For {
-                item_name: _,
-                mode,
-                source,
-                body,
-                pacing_ms,
-                max_ms,
-            } => {
-                if let crate::frontend::ast::ForMode::Consume = mode {
-                    self.mark_consumed(source)?;
-                }
-
-                if let Some(max) = max_ms {
-                    if *max == 0 {
-                        return Err(
-                            self.annotate(SemanticErrorKind::InvalidLoopBudget)
-                        );
-                    }
-                }
-
-                // Analyze body statements for entropic effects and branch costs.
-                for inner_stmt in body {
-                    self.analyze_statement(inner_stmt)?;
-                }
-
-                if let Some(pacing) = pacing_ms {
-                    let body_cost = body.len() as u64;
-                    if body_cost > *pacing {
-                        return Err(
-                            self.annotate(SemanticErrorKind::PacingViolation)
-                        );
-                    }
-                }
-            }
-            Statement::Speculate {
-                max_ms: _,
-                body,
-                fallback,
-            } => {
-                let context_snapshot = self.branch_contexts.clone();
-
-                for stmt in body {
-                    self.analyze_statement(stmt)?;
-                }
-
-                self.branch_contexts = context_snapshot.clone();
-
-                if let Some(fallback_body) = fallback {
-                    for stmt in fallback_body {
-                        self.analyze_statement(stmt)?;
-                    }
-                }
-
-                self.branch_contexts = context_snapshot;
-            }
-            Statement::Collapse => {
-                // collapse is control flow only, no entropic change here
-            }
-            Statement::SplitMap {
-                item_name: _,
-                mode: _,
-                source,
-                body,
-                reconcile: _,
-            } => {
-                self.mark_consumed(source)?;
-                for inner_stmt in body {
-                    self.analyze_statement(inner_stmt)?;
-                }
-            }
-            Statement::Anchor(_)
-            | Statement::Rewind(_)
-            | Statement::ChannelOpen { .. }
-            | Statement::NetworkRequest { .. }
-            | Statement::AcausalReset { .. } => {
-                // These statements have no direct impact on the local arena's entropy
-            }
-            Statement::Capability(cap) => {
-                if !self.is_capability_allowed(&cap.path) {
-                    return Err(self.annotate(
-                        SemanticErrorKind::MissingCapability(cap.path.clone()),
-                    ));
-                }
-            }
-        }
-        Ok(())
+        statement::analyze_statement(self, stmt)
     }
 
     fn analyze_expression(
         &mut self,
         expr: &Expression,
     ) -> Result<(), SemanticError> {
-        match expr {
-            Expression::Call { routine, args } => {
-                let (params, _taking_ms) =
-                    self.routines
-                        .get(routine)
-                        .ok_or_else(|| {
-                            self.annotate(SemanticErrorKind::EntropyMismatch(
-                                format!("unknown routine {}", routine),
-                            ))
-                        })?
-                        .clone();
-                if args.len() != params.len() {
-                    return Err(self.annotate(SemanticErrorKind::EntropyMismatch(
-                        format!(
-                            "routine {} expects {} args, got {}",
-                            routine,
-                            params.len(),
-                            args.len()
-                        ),
-                    )));
-                }
-                for (arg_expr, (mode, _param_name)) in args.iter().zip(params.iter())
-                {
-                    // Evaluate nested expression side effects (calls, operators) without moving simple identifier refs.
-                    self.analyze_expression_nonconsuming(arg_expr)?;
-
-                    match mode {
-                        crate::frontend::ast::ParamMode::Consume => {
-                            if let Expression::Identifier(name) = arg_expr {
-                                self.mark_consumed(name)?;
-                            } else {
-                                return Err(self.annotate(
-                                    SemanticErrorKind::EntropyMismatch(
-                                        "consume param must be identifier".into(),
-                                    ),
-                                ));
-                            }
-                        }
-                        crate::frontend::ast::ParamMode::Clone => {
-                            if let Expression::Identifier(name) = arg_expr {
-                                // clone reads the value but does not mark consumed.
-                                if self
-                                    .branch_contexts
-                                    .get(&self.current_branch)
-                                    .unwrap()
-                                    .consumed
-                                    .contains(name)
-                                {
-                                    return Err(self.annotate(
-                                        SemanticErrorKind::UseAfterConsume(
-                                            name.clone(),
-                                        ),
-                                    ));
-                                }
-                            }
-                        }
-                        crate::frontend::ast::ParamMode::Decay => {
-                            if let Expression::Identifier(name) = arg_expr {
-                                self.mark_consumed(name)?;
-                            }
-                        }
-                        crate::frontend::ast::ParamMode::Peek => {
-                            // no effect beyond reading expression in nested context
-                        }
-                    }
-                }
-                Ok(())
-            }
-            Expression::Identifier(name) => self.mark_consumed(name),
-            Expression::FieldAccess { parent, .. } => {
-                // Structural Decay: Accessing a field consumes the "wholeness" of the parent,
-                // unless inside an inspect block.
-                if self.inspection_depth > 0 {
-                    Ok(())
-                } else {
-                    self.mark_consumed(parent)
-                }
-            }
-            Expression::CloneOp(name) => {
-                let state = self.branch_contexts.get(&self.current_branch).unwrap();
-                if state.consumed.contains(name) {
-                    return Err(self.annotate(SemanticErrorKind::UseAfterConsume(
-                        name.clone(),
-                    )));
-                }
-                Ok(())
-            }
-            Expression::StructLit(fields) => {
-                for (_, inner_expr) in fields {
-                    self.analyze_expression(inner_expr)?;
-                }
-                Ok(())
-            }
-            Expression::ChannelReceive(_)
-            | Expression::Literal(_)
-            | Expression::Integer(_)
-            | Expression::ArrayLiteral(_) => {
-                // Receive creates new state; Literals, integers, and arrays are constant
-                Ok(())
-            }
-            Expression::BinaryOp { left, right, .. } => {
-                self.analyze_expression(left)?;
-                self.analyze_expression(right)?;
-                Ok(())
-            }
-        }
+        expression::analyze_expression(self, expr)
     }
 
     fn analyze_expression_nonconsuming(
         &mut self,
         expr: &Expression,
     ) -> Result<(), SemanticError> {
-        match expr {
-            Expression::Call { .. } => self.analyze_expression(expr),
-            Expression::Identifier(_) => Ok(()),
-            Expression::FieldAccess { .. } => Ok(()),
-            Expression::CloneOp(name) => {
-                let state = self.branch_contexts.get(&self.current_branch).unwrap();
-                if state.consumed.contains(name) {
-                    return Err(self.annotate(SemanticErrorKind::UseAfterConsume(
-                        name.clone(),
-                    )));
-                }
-                Ok(())
-            }
-            Expression::StructLit(fields) => {
-                for (_, inner_expr) in fields {
-                    self.analyze_expression_nonconsuming(inner_expr)?;
-                }
-                Ok(())
-            }
-            Expression::ArrayLiteral(elements) => {
-                for inner_expr in elements {
-                    self.analyze_expression_nonconsuming(inner_expr)?;
-                }
-                Ok(())
-            }
-            Expression::ChannelReceive(_)
-            | Expression::Literal(_)
-            | Expression::Integer(_) => Ok(()),
-            Expression::BinaryOp { left, right, .. } => {
-                self.analyze_expression_nonconsuming(left)?;
-                self.analyze_expression_nonconsuming(right)?;
-                Ok(())
-            }
-        }
+        expression::analyze_expression_nonconsuming(self, expr)
     }
 
     fn estimate_block_cost(&self, block: &[SpannedStatement]) -> u64 {
-        block
-            .iter()
-            .map(|stmt| self.estimate_statement_cost(&stmt.stmt))
-            .sum()
+        statement::estimate_block_cost(self, block)
     }
 
     fn estimate_statement_cost(&self, stmt: &Statement) -> u64 {
-        use crate::frontend::ast::Statement;
-
-        let base = 1;
-        let extra = match stmt {
-            Statement::NetworkRequest { .. } => 5,
-            Statement::Split { .. }
-            | Statement::Merge { .. }
-            | Statement::Anchor(_)
-            | Statement::Rewind(_)
-            | Statement::Commit(_)
-            | Statement::Send { .. }
-            | Statement::ChannelOpen { .. }
-            | Statement::ChannelSend { .. }
-            | Statement::AcausalReset { .. }
-            | Statement::Capability(_) => 0,
-            Statement::Assignment { expr, .. } => {
-                self.estimate_expression_cost(expr)
-            }
-            Statement::Expression(expr) => self.estimate_expression_cost(expr),
-            Statement::RelativisticBlock { body, .. } => {
-                self.estimate_block_cost(body)
-            }
-            Statement::Isolate(block) => self.estimate_block_cost(&block.body),
-            Statement::Inspect { body, .. } => self.estimate_block_cost(body),
-            Statement::Watchdog { recovery, .. } => {
-                self.estimate_block_cost(recovery)
-            }
-            Statement::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                1 + self.estimate_block_cost(then_branch).max(
-                    self.estimate_block_cost(
-                        else_branch.as_ref().unwrap_or(&Vec::new()),
-                    ),
-                )
-            }
-            Statement::For { pacing_ms, .. } => pacing_ms.unwrap_or(1),
-            Statement::Print(expr) | Statement::Debug(expr) => {
-                1 + self.estimate_expression_cost(expr)
-            }
-            Statement::Speculate { body, fallback, .. } => {
-                let fallback_cost = self
-                    .estimate_block_cost(fallback.as_ref().unwrap_or(&Vec::new()));
-                let body_cost = self.estimate_block_cost(body);
-                1 + body_cost + fallback_cost
-            }
-            Statement::Select { cases, timeout, .. } => {
-                let case_max_cost = cases
-                    .iter()
-                    .map(|c| self.estimate_block_cost(&c.body))
-                    .max()
-                    .unwrap_or(0);
-                let timeout_cost = timeout
-                    .as_ref()
-                    .map(|b| self.estimate_block_cost(b))
-                    .unwrap_or(0);
-                1 + case_max_cost.max(timeout_cost)
-            }
-            Statement::MatchEntropy {
-                valid_branch,
-                decayed_branch,
-                consumed_branch,
-                ..
-            } => {
-                let valid_cost = valid_branch
-                    .as_ref()
-                    .map(|(_, body)| self.estimate_block_cost(body))
-                    .unwrap_or(0);
-                let decayed_cost = decayed_branch
-                    .as_ref()
-                    .map(|(_, body)| self.estimate_block_cost(body))
-                    .unwrap_or(0);
-                let consumed_cost = consumed_branch
-                    .as_ref()
-                    .map(|body| self.estimate_block_cost(body))
-                    .unwrap_or(0);
-                1 + valid_cost.max(decayed_cost).max(consumed_cost)
-            }
-            Statement::Collapse => 0,
-            Statement::SplitMap { .. } => 1,
-            Statement::Yield(_) => 0,
-            Statement::Loop { max_ms, .. } => *max_ms,
-            Statement::SpeculationMode(_) => 0,
-            Statement::Break => 0,
-            Statement::RoutineDef { taking_ms, .. } => taking_ms.unwrap_or(0),
-        };
-        base + extra
+        statement::estimate_statement_cost(self, stmt)
     }
 
-    fn estimate_expression_cost(&self, expr: &Expression) -> u64 {
-        match expr {
-            Expression::Call { routine, args } => {
-                let arg_cost: u64 =
-                    args.iter().map(|a| self.estimate_expression_cost(a)).sum();
-                let taking_ms =
-                    self.routines.get(routine).map(|(_, t)| *t).unwrap_or(0);
-                arg_cost + taking_ms
-            }
-            Expression::BinaryOp { left, right, .. } => {
-                1 + self.estimate_expression_cost(left)
-                    + self.estimate_expression_cost(right)
-            }
-            Expression::StructLit(fields) => {
-                1 + fields
-                    .values()
-                    .map(|v| self.estimate_expression_cost(v))
-                    .sum::<u64>()
-            }
-            Expression::ArrayLiteral(elements) => {
-                1 + elements
-                    .iter()
-                    .map(|e| self.estimate_expression_cost(e))
-                    .sum::<u64>()
-            }
-            Expression::FieldAccess { .. }
-            | Expression::CloneOp(_)
-            | Expression::ChannelReceive(_)
-            | Expression::Identifier(_)
-            | Expression::Literal(_)
-            | Expression::Integer(_) => 1,
-        }
-    }
-
-    fn mark_consumed(&mut self, name: &str) -> Result<(), SemanticError> {
+    pub(crate) fn mark_consumed(&mut self, name: &str) -> Result<(), SemanticError> {
         let state = self.branch_contexts.get_mut(&self.current_branch).unwrap();
         if state.consumed.contains(name) {
             return Err(
@@ -1092,10 +215,7 @@ impl EntropicAnalyzer {
         Ok(())
     }
 
-    fn statement_snippet(
-        &self,
-        stmt: &crate::frontend::ast::SpannedStatement,
-    ) -> String {
+    fn statement_snippet(&self, stmt: &SpannedStatement) -> String {
         match &stmt.stmt {
             Statement::Assignment { target, expr } => {
                 format!("let {} = {}", target, self.expr_snippet(expr))
@@ -1171,10 +291,10 @@ impl EntropicAnalyzer {
             }
             Expression::CloneOp(v) => format!("clone({})", v),
             Expression::StructLit(fields) => {
-                let mut parts = Vec::new();
-                for (k, v) in fields {
-                    parts.push(format!("{} = {}", k, self.expr_snippet(v)));
-                }
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| format!("{} = {}", k, self.expr_snippet(v)))
+                    .collect();
                 format!("struct {{ {} }}", parts.join(", "))
             }
             Expression::ChannelReceive(id) => format!("chan_recv({})", id),
@@ -1191,16 +311,16 @@ impl EntropicAnalyzer {
             }
             Expression::BinaryOp { left, op, right } => {
                 let op_str = match op {
-                    crate::frontend::ast::BinaryOperator::Add => "+",
-                    crate::frontend::ast::BinaryOperator::Sub => "-",
-                    crate::frontend::ast::BinaryOperator::Mul => "*",
-                    crate::frontend::ast::BinaryOperator::Div => "/",
-                    crate::frontend::ast::BinaryOperator::Eq => "==",
-                    crate::frontend::ast::BinaryOperator::Neq => "!=",
-                    crate::frontend::ast::BinaryOperator::Lt => "<",
-                    crate::frontend::ast::BinaryOperator::Gt => ">",
-                    crate::frontend::ast::BinaryOperator::Le => "<=",
-                    crate::frontend::ast::BinaryOperator::Ge => ">=",
+                    BinaryOperator::Add => "+",
+                    BinaryOperator::Sub => "-",
+                    BinaryOperator::Mul => "*",
+                    BinaryOperator::Div => "/",
+                    BinaryOperator::Eq => "==",
+                    BinaryOperator::Neq => "!=",
+                    BinaryOperator::Lt => "<",
+                    BinaryOperator::Gt => ">",
+                    BinaryOperator::Le => "<=",
+                    BinaryOperator::Ge => ">=",
                 };
                 format!(
                     "({} {} {})",
