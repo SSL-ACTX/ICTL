@@ -1,0 +1,795 @@
+use crate::frontend::ast::{
+    Capability, EntropyMode, Expression, MergeResolution, ParamMode,
+    ResolutionStrategy, SpeculationCommitMode, Statement, TimeCoordinate,
+};
+use crate::runtime::gc::GarbageCollector;
+use crate::runtime::memory::{Arena, EntropicState, MemoryError, Payload};
+use crate::runtime::vm::error::TemporalError;
+use crate::runtime::vm::state::{
+    AnchorPoint, Routine, SpeculationContext, Timeline, Vm,
+};
+use std::collections::{HashMap, VecDeque};
+
+pub(crate) fn execute_statement_inner(
+    vm: &mut Vm,
+    branch_id: &str,
+    stmt: &crate::frontend::ast::SpannedStatement,
+) -> Result<(), TemporalError> {
+    match &stmt.stmt {
+        Statement::RelativisticBlock { time, body } => {
+            let target_branch = match time {
+                TimeCoordinate::Branch(id) => id.clone(),
+                _ => branch_id.to_string(),
+            };
+
+            for inner_stmt in body {
+                vm.execute_statement(&target_branch, inner_stmt)?;
+            }
+        }
+        Statement::Watchdog {
+            target,
+            timeout_ms,
+            recovery,
+        } => {
+            let should_bite = if let Ok(branch) = vm.get_branch_mut(target) {
+                branch.local_clock > *timeout_ms
+            } else {
+                false
+            };
+
+            if should_bite {
+                // Phase 13: Instead of deleting, we trigger recovery logic.
+                // The recovery logic may use AcausalReset to fix the branch.
+                for recovery_stmt in recovery {
+                    vm.execute_statement(branch_id, recovery_stmt)?;
+                }
+                return Err(TemporalError::WatchdogBite(
+                    target.clone(),
+                    *timeout_ms,
+                ));
+            }
+        }
+        Statement::Speculate {
+            max_ms,
+            body,
+            fallback,
+        } => {
+            let original_branch = vm.get_branch_mut(branch_id)?.clone();
+            let original_channels = vm.channels.clone();
+            let fallback_cost =
+                vm.estimate_block_cost(fallback.as_ref().unwrap_or(&Vec::new()));
+
+            let mut speculative_error: Option<TemporalError> = None;
+
+            vm.speculation_stack.push(SpeculationContext::default());
+            vm.set_branch_state(branch_id, original_branch.clone());
+            vm.channels = original_channels.clone();
+
+            for stmt in body {
+                if let Err(err) = vm.execute_statement(branch_id, stmt) {
+                    speculative_error = Some(err);
+                    break;
+                }
+
+                let current_clock = vm.get_branch_mut(branch_id)?.local_clock;
+                if current_clock.saturating_sub(original_branch.local_clock)
+                    > *max_ms
+                {
+                    speculative_error = Some(TemporalError::WatchdogBite(
+                        branch_id.to_string(),
+                        *max_ms,
+                    ));
+                    break;
+                }
+            }
+
+            let speculative_branch_snapshot = vm.get_branch_mut(branch_id)?.clone();
+
+            let speculation_context = vm
+                .speculation_stack
+                .pop()
+                .expect("speculation stack underflow");
+
+            let commit_valid = speculative_error.is_none()
+                && speculation_context.commit_executed
+                && !speculation_context.collapse_happened;
+
+            // Restore base state before applying either commit or fallback
+            vm.set_branch_state(branch_id, original_branch.clone());
+            vm.channels = original_channels.clone();
+
+            if commit_valid {
+                match vm.speculative_commit_mode {
+                    SpeculationCommitMode::Full => {
+                        vm.set_branch_state(branch_id, speculative_branch_snapshot);
+                    }
+                    SpeculationCommitMode::Selective => {
+                        let branch = vm.get_branch_mut(branch_id)?;
+                        for var in speculation_context.commit_vars.iter() {
+                            if let Some(payload) =
+                                speculative_branch_snapshot.arena.peek(var)
+                            {
+                                branch.arena.insert(
+                                    var.clone(),
+                                    EntropicState::Valid(payload),
+                                )?;
+                            } else {
+                                branch.arena.set_consumed(var)?;
+                            }
+                        }
+                    }
+                }
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch.commit_horizon_passed = true;
+            } else if let Some(fallback_body) = fallback {
+                for stmt in fallback_body {
+                    vm.execute_statement(branch_id, stmt)?;
+                }
+            }
+
+            let branch = vm.get_branch_mut(branch_id)?;
+            let target_clock =
+                original_branch.local_clock + 1 + *max_ms + fallback_cost;
+            if branch.local_clock < target_clock {
+                let padding = target_clock - branch.local_clock;
+                branch.local_clock += padding;
+                branch.consume_budget(padding)?;
+            }
+        }
+        Statement::Collapse => {
+            if let Some(ctx) = vm.speculation_stack.last_mut() {
+                ctx.collapse_happened = true;
+            }
+            return Err(TemporalError::SpeculationCollapsed);
+        }
+        Statement::Break => {
+            let branch = vm.get_branch_mut(branch_id)?;
+            if branch.loop_depth == 0 {
+                return Err(TemporalError::InvalidBreak);
+            }
+            branch.break_requested = true;
+        }
+        Statement::SpeculationMode(mode) => {
+            vm.speculative_commit_mode = *mode;
+        }
+        Statement::AcausalReset {
+            target,
+            anchor_name,
+        } => {
+            // PHASE 13: Time-Loop Logic
+            // We reach into a target branch and reset its state to a previous anchor.
+            let anchor = {
+                let target_branch = vm.get_branch_mut(target)?;
+                target_branch
+                    .anchors
+                    .get(anchor_name)
+                    .ok_or_else(|| {
+                        TemporalError::AnchorNotFound(anchor_name.clone())
+                    })?
+                    .clone()
+            };
+
+            let target_branch = vm.get_branch_mut(target)?;
+            target_branch.arena = anchor.arena_snapshot;
+            target_branch.local_clock = anchor.clock_snapshot;
+            target_branch.commit_horizon_passed = false;
+        }
+        Statement::Inspect { target: _, body } => {
+            let original_state = vm.get_branch_mut(branch_id)?.clone();
+            for st in body {
+                vm.execute_statement(branch_id, st)?;
+            }
+            vm.set_branch_state(branch_id, original_state);
+        }
+        Statement::Isolate(block) => {
+            let (capabilities, cpu_req) = {
+                let branch = vm.get_branch_mut(branch_id)?;
+                if let Some(limit_bytes) = block.manifest.memory_budget_bytes {
+                    branch.arena.capacity = limit_bytes;
+                }
+                if let Some(mode) = block.manifest.mode {
+                    branch.entropy_mode = mode;
+                }
+                branch.manifest_stack.push(block.manifest.clone());
+                (
+                    block.manifest.capabilities.clone(),
+                    block.manifest.cpu_budget_ms,
+                )
+            };
+
+            for cap in &capabilities {
+                vm.execute_capability(branch_id, cap)?;
+            }
+
+            if let Some(cpu) = cpu_req {
+                let branch = vm.get_branch_mut(branch_id)?;
+                if cpu > branch.cpu_budget_ms {
+                    return Err(TemporalError::BudgetExhausted);
+                }
+                branch.cpu_budget_ms = cpu;
+            }
+
+            for inner_stmt in &block.body {
+                vm.execute_statement(branch_id, inner_stmt)?;
+            }
+
+            let branch = vm.get_branch_mut(branch_id)?;
+            branch.manifest_stack.pop();
+        }
+        Statement::RoutineDef {
+            name,
+            params,
+            taking_ms,
+            body,
+        } => {
+            let final_taking_ms =
+                taking_ms.unwrap_or_else(|| vm.estimate_block_cost(body));
+            vm.routines.insert(
+                name.clone(),
+                Routine {
+                    params: params.clone(),
+                    taking_ms: Some(final_taking_ms),
+                    body: body.clone(),
+                },
+            );
+        }
+        Statement::Capability(cap) => {
+            vm.execute_capability(branch_id, cap)?;
+        }
+        Statement::Print(expr) => {
+            let payload = vm.evaluate_expression(branch_id, expr)?;
+            println!("[ictl] {}", payload);
+        }
+        Statement::Debug(expr) => {
+            let payload = vm.evaluate_expression_nonconsuming(branch_id, expr)?;
+            println!("[ictl-debug] {}", payload);
+        }
+        Statement::Assignment { target, expr } => {
+            let payload = vm.evaluate_expression(branch_id, expr)?;
+            if let Some(ctx) = vm.speculation_stack.last_mut() {
+                if ctx.in_commit_block {
+                    ctx.commit_vars.insert(target.clone());
+                }
+            }
+            let branch = vm.get_branch_mut(branch_id)?;
+            branch
+                .arena
+                .insert(target.clone(), EntropicState::Valid(payload))?;
+        }
+        Statement::Split { parent, branches } => {
+            let branches_str: Vec<&str> =
+                branches.iter().map(|s| s.as_str()).collect();
+            vm.split_timeline(parent, branches_str)?;
+        }
+        Statement::Merge {
+            branches,
+            target,
+            resolutions,
+        } => {
+            let branches_str: Vec<&str> =
+                branches.iter().map(|s| s.as_str()).collect();
+            vm.merge_timelines(branches_str, target, resolutions)?;
+        }
+        Statement::Anchor(name) => {
+            let branch = vm.get_branch_mut(branch_id)?;
+            let snapshot = AnchorPoint {
+                name: name.clone(),
+                clock_snapshot: branch.local_clock,
+                arena_snapshot: branch.arena.clone(),
+            };
+            branch.anchors.insert(name.clone(), snapshot);
+        }
+        Statement::Rewind(name) => {
+            let branch = vm.get_branch_mut(branch_id)?;
+            if branch.entropy_mode == EntropyMode::Chaos {
+                return Err(TemporalError::RewindDisabledInChaos);
+            }
+            let anchor = branch.anchors.get(name).ok_or_else(|| {
+                if branch.commit_horizon_passed {
+                    TemporalError::CommitHorizonViolation
+                } else {
+                    TemporalError::AnchorNotFound(name.clone())
+                }
+            })?;
+            branch.arena = anchor.arena_snapshot.clone();
+        }
+        Statement::Commit(body) => {
+            if let Some(ctx) = vm.speculation_stack.last_mut() {
+                ctx.commit_executed = true;
+                ctx.in_commit_block = true;
+            }
+
+            for inner_stmt in body {
+                vm.execute_statement(branch_id, inner_stmt)?;
+            }
+
+            if let Some(ctx) = vm.speculation_stack.last_mut() {
+                ctx.in_commit_block = false;
+            }
+
+            let branch = vm.get_branch_mut(branch_id)?;
+            branch.commit_horizon_passed = true;
+            crate::runtime::gc::GarbageCollector::collect_commit_anchors(branch);
+            branch.arena.compact_consumed();
+        }
+        Statement::Send {
+            value_id,
+            target_branch,
+        } => {
+            let payload = {
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch.arena.consume(value_id)?
+            };
+            let target = vm.get_branch_mut(target_branch)?;
+            target
+                .arena
+                .insert(value_id.clone(), EntropicState::Valid(payload))?;
+        }
+        Statement::ChannelOpen { name, capacity } => {
+            vm.channels
+                .insert(name.clone(), VecDeque::with_capacity(*capacity));
+        }
+        Statement::ChannelSend { chan_id, value_id } => {
+            let payload = {
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch.arena.consume(value_id)?
+            };
+            let chan = vm.channels.get_mut(chan_id).ok_or_else(|| {
+                TemporalError::ChannelFault(format!(
+                    "Channel not found: {}",
+                    chan_id
+                ))
+            })?;
+            chan.push_back(payload);
+        }
+        Statement::Select {
+            max_ms: _,
+            cases,
+            timeout,
+            reconcile: _,
+        } => {
+            let original_clock = {
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch.local_clock
+            };
+
+            let mut selected_case = None;
+            for case in cases {
+                if let Expression::ChannelReceive(chan_id) = &case.source {
+                    if let Some(chan) = vm.channels.get(chan_id) {
+                        if !chan.is_empty() {
+                            selected_case = Some(case);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if let Some(case) = selected_case {
+                if let Expression::ChannelReceive(chan_id) = &case.source {
+                    if let Some(payload) =
+                        vm.channels.get_mut(chan_id).and_then(|q| q.pop_front())
+                    {
+                        let branch = vm.get_branch_mut(branch_id)?;
+                        branch.arena.insert(
+                            case.binding.clone(),
+                            EntropicState::Valid(payload),
+                        )?;
+                    }
+                }
+                for stmt in &case.body {
+                    vm.execute_statement(branch_id, stmt)?;
+                }
+                // case binding is local to the select block
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch.arena.bindings.remove(&case.binding);
+            } else if let Some(timeout_body) = timeout {
+                for stmt in timeout_body {
+                    vm.execute_statement(branch_id, stmt)?;
+                }
+            }
+
+            let case_max_cost = cases
+                .iter()
+                .map(|c| vm.estimate_block_cost(&c.body))
+                .max()
+                .unwrap_or(0);
+            let timeout_cost = timeout
+                .as_ref()
+                .map(|b| vm.estimate_block_cost(b))
+                .unwrap_or(0);
+
+            let target_clock = original_clock + 1 + case_max_cost.max(timeout_cost);
+            let branch = vm.get_branch_mut(branch_id)?;
+            if branch.local_clock < target_clock {
+                let padding = target_clock - branch.local_clock;
+                branch.local_clock += padding;
+                branch.consume_budget(padding)?;
+            }
+        }
+        Statement::MatchEntropy {
+            target,
+            valid_branch,
+            decayed_branch,
+            consumed_branch,
+        } => {
+            let status = {
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch
+                    .arena
+                    .bindings
+                    .get(target)
+                    .cloned()
+                    .unwrap_or(EntropicState::Consumed)
+            };
+
+            let selected = match status {
+                EntropicState::Valid(_) => valid_branch.as_ref(),
+                EntropicState::Decayed(_) => decayed_branch.as_ref(),
+                EntropicState::Consumed => None,
+            };
+
+            if let Some((binding, body)) = selected {
+                let branch = vm.get_branch_mut(branch_id)?;
+                if let Some(payload) = branch.arena.consume(target).ok() {
+                    branch
+                        .arena
+                        .insert(binding.clone(), EntropicState::Valid(payload))?;
+                }
+                for stmt in body {
+                    vm.execute_statement(branch_id, stmt)?;
+                }
+            } else if matches!(status, EntropicState::Consumed) {
+                if let Some(body) = consumed_branch {
+                    for stmt in body {
+                        vm.execute_statement(branch_id, stmt)?;
+                    }
+                }
+            }
+        }
+        Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+            reconcile,
+        } => {
+            let cond_payload = vm.evaluate_expression(branch_id, condition)?;
+            let cond_true = matches!(cond_payload, Payload::Integer(v) if v != 0)
+                || matches!(cond_payload, Payload::String(ref s) if s != "" );
+
+            let then_cost = vm.estimate_block_cost(then_branch);
+            let else_cost =
+                vm.estimate_block_cost(else_branch.as_ref().unwrap_or(&Vec::new()));
+            let max_cost = then_cost.max(else_cost) + 1; // 1ms overhead
+
+            // clone environment for speculative branch execution
+            let original_channels = vm.channels.clone();
+            let original_branch = vm.get_branch_mut(branch_id)?.clone();
+
+            let then_state = vm.simulate_branch(branch_id, then_branch)?;
+            vm.channels = original_channels.clone();
+            let else_state = vm.simulate_branch(
+                branch_id,
+                else_branch.as_ref().unwrap_or(&Vec::new()),
+            )?;
+            vm.channels = original_channels.clone();
+
+            let mut final_state = if cond_true {
+                then_state.clone()
+            } else {
+                else_state.clone()
+            };
+
+            if let Some(reconcile_rules) = reconcile {
+                for (var, strat) in &reconcile_rules.rules {
+                    match strat {
+                        ResolutionStrategy::FirstWins | ResolutionStrategy::Auto => {
+                            if let Some(p) = then_state.arena.peek(var) {
+                                final_state
+                                    .arena
+                                    .insert(var.clone(), EntropicState::Valid(p))?;
+                            } else if let Some(p) = else_state.arena.peek(var) {
+                                final_state
+                                    .arena
+                                    .insert(var.clone(), EntropicState::Valid(p))?;
+                            } else {
+                                final_state.arena.set_consumed(var)?;
+                            }
+                        }
+                        ResolutionStrategy::Priority(branch_name) => {
+                            if branch_name == "if" {
+                                if let Some(p) = then_state.arena.peek(var) {
+                                    final_state.arena.insert(
+                                        var.clone(),
+                                        EntropicState::Valid(p),
+                                    )?;
+                                } else {
+                                    final_state.arena.set_consumed(var)?;
+                                }
+                            } else if branch_name == "else" {
+                                if let Some(p) = else_state.arena.peek(var) {
+                                    final_state.arena.insert(
+                                        var.clone(),
+                                        EntropicState::Valid(p),
+                                    )?;
+                                } else {
+                                    final_state.arena.set_consumed(var)?;
+                                }
+                            }
+                        }
+                        ResolutionStrategy::Decay => {
+                            final_state.arena.set_consumed(var)?;
+                        }
+                        ResolutionStrategy::Custom(_) => {
+                            // Apply first-wins fallback for custom
+                            if let Some(p) = then_state.arena.peek(var) {
+                                final_state
+                                    .arena
+                                    .insert(var.clone(), EntropicState::Valid(p))?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            vm.set_branch_state(branch_id, final_state);
+
+            let branch = vm.get_branch_mut(branch_id)?;
+            let run_cost = branch.local_clock - original_branch.local_clock;
+            if run_cost < max_cost {
+                let padding = max_cost - run_cost;
+                branch.local_clock += padding;
+                branch.consume_budget(padding)?;
+            }
+        }
+        Statement::For {
+            item_name,
+            mode,
+            source,
+            body,
+            pacing_ms,
+            max_ms,
+        } => {
+            let source_payload = {
+                let branch = vm.get_branch_mut(branch_id)?;
+                let source_payload = match mode {
+                    crate::frontend::ast::ForMode::Consume => {
+                        branch.arena.consume(source)?
+                    }
+                    crate::frontend::ast::ForMode::Clone => branch
+                        .arena
+                        .peek(source)
+                        .ok_or(MemoryError::AlreadyConsumed)?,
+                };
+                source_payload
+            };
+
+            let elements = match source_payload {
+                Payload::Array(vec) => vec,
+                Payload::Struct(fields) => {
+                    let mut items: Vec<Payload> = Vec::new();
+                    for (key, state) in fields {
+                        if let EntropicState::Valid(value) = state {
+                            let mut map = std::collections::HashMap::new();
+                            map.insert(
+                                "key".to_string(),
+                                EntropicState::Valid(Payload::String(key)),
+                            );
+                            map.insert(
+                                "value".to_string(),
+                                EntropicState::Valid(value),
+                            );
+                            items.push(Payload::Struct(map));
+                        }
+                    }
+                    items
+                }
+                _ => {
+                    return Err(TemporalError::EvalError(
+                        "for-source must be array or struct".into(),
+                    ))
+                }
+            };
+
+            let mut elapsed = 0;
+            let max_allowed = max_ms.unwrap_or(u64::MAX);
+
+            for item_value in elements.into_iter() {
+                if elapsed >= max_allowed {
+                    break;
+                }
+
+                {
+                    let branch = vm.get_branch_mut(branch_id)?;
+                    branch.arena.insert(
+                        item_name.clone(),
+                        EntropicState::Valid(item_value),
+                    )?;
+                }
+
+                let iteration_start = vm.get_branch_mut(branch_id)?.local_clock;
+                for stmt in body {
+                    vm.execute_statement(branch_id, stmt)?;
+                    if vm.get_branch_mut(branch_id)?.break_requested {
+                        let branch = vm.get_branch_mut(branch_id)?;
+                        branch.break_requested = false;
+                        break;
+                    }
+                }
+
+                let body_cost =
+                    vm.get_branch_mut(branch_id)?.local_clock - iteration_start;
+                let paced = pacing_ms.unwrap_or(body_cost);
+
+                if body_cost > paced {
+                    return Err(TemporalError::PacingViolation);
+                }
+
+                let pad = paced - body_cost;
+                if pad > 0 {
+                    let branch = vm.get_branch_mut(branch_id)?;
+                    branch.local_clock += pad;
+                    branch.consume_budget(pad)?;
+                }
+
+                elapsed += paced;
+            }
+
+            if let Some(max) = max_ms {
+                let branch = vm.get_branch_mut(branch_id)?;
+                if branch.local_clock < *max {
+                    let padding = *max - branch.local_clock;
+                    branch.local_clock += padding;
+                    branch.consume_budget(padding)?;
+                }
+            }
+        }
+        Statement::SplitMap {
+            item_name,
+            mode,
+            source,
+            body,
+            reconcile,
+        } => {
+            let source_payload = {
+                let branch = vm.get_branch_mut(branch_id)?;
+                match mode {
+                    crate::frontend::ast::ForMode::Consume => {
+                        branch.arena.consume(source)?
+                    }
+                    crate::frontend::ast::ForMode::Clone => branch
+                        .arena
+                        .peek(source)
+                        .ok_or(MemoryError::AlreadyConsumed)?,
+                }
+            };
+            let elements = match source_payload {
+                Payload::Array(vec) => vec,
+                _ => {
+                    return Err(TemporalError::EvalError(
+                        "split_map source must be array".into(),
+                    ))
+                }
+            };
+
+            let mut results: Vec<Payload> = Vec::new();
+
+            for item_value in elements.into_iter() {
+                let child_name = format!("splitmap_{}", results.len());
+                let child_snapshot = vm.get_branch_mut(branch_id)?.clone();
+
+                vm.active_branches
+                    .insert(child_name.clone(), child_snapshot);
+                {
+                    let child_branch = vm.get_branch_mut(&child_name)?;
+                    child_branch.arena.insert(
+                        item_name.clone(),
+                        EntropicState::Valid(item_value),
+                    )?;
+                }
+
+                for stmt in body {
+                    vm.execute_statement(&child_name, stmt)?;
+                }
+
+                let yielded = vm
+                    .get_branch_mut(&child_name)?
+                    .arena
+                    .peek("yielded")
+                    .map(|p| p.clone());
+                if let Some(Payload::Array(arr)) = yielded {
+                    results.extend(arr);
+                }
+
+                vm.terminate_branch(&child_name)?;
+            }
+
+            let branch = vm.get_branch_mut(branch_id)?;
+            branch.arena.insert(
+                "splitmap_results".into(),
+                EntropicState::Valid(Payload::Array(results)),
+            )?;
+
+            if let Some(_resolver) = reconcile {
+                // placeholder: resolver semantics can be finalized later
+            }
+        }
+        Statement::Yield(item) => {
+            let branch = vm.get_branch_mut(branch_id)?;
+            let value = branch.arena.consume(item)?;
+            match branch.arena.peek("yielded") {
+                Some(Payload::Array(mut existing)) => {
+                    existing.push(value);
+                    branch.arena.insert(
+                        "yielded".into(),
+                        EntropicState::Valid(Payload::Array(existing)),
+                    )?;
+                }
+                _ => {
+                    branch.arena.insert(
+                        "yielded".into(),
+                        EntropicState::Valid(Payload::Array(vec![value])),
+                    )?;
+                }
+            }
+        }
+        Statement::Loop { max_ms, body } => {
+            let branch = vm.get_branch_mut(branch_id)?;
+            if *max_ms == 0 {
+                return Err(TemporalError::InvalidLoopBudget);
+            }
+            branch.loop_depth += 1;
+            let loop_start = branch.local_clock;
+            let mut iterations = 0;
+
+            while vm.get_branch_mut(branch_id)?.local_clock - loop_start < *max_ms {
+                iterations += 1;
+                if iterations > 1000 {
+                    return Err(TemporalError::WatchdogBite(
+                        branch_id.to_string(),
+                        *max_ms,
+                    ));
+                }
+
+                let iter_start = vm.get_branch_mut(branch_id)?.local_clock;
+                for stmt in body {
+                    vm.execute_statement(branch_id, stmt)?;
+                    if vm.get_branch_mut(branch_id)?.break_requested {
+                        break;
+                    }
+                }
+
+                if vm.get_branch_mut(branch_id)?.break_requested {
+                    let branch = vm.get_branch_mut(branch_id)?;
+                    branch.break_requested = false;
+                    break;
+                }
+
+                if vm.get_branch_mut(branch_id)?.local_clock == iter_start {
+                    break;
+                }
+            }
+
+            let branch = vm.get_branch_mut(branch_id)?;
+            let target_clock = loop_start + *max_ms;
+            if branch.local_clock < target_clock {
+                let padding = target_clock - branch.local_clock;
+                branch.local_clock += padding;
+                branch.consume_budget(padding)?;
+            }
+
+            if branch.loop_depth > 0 {
+                branch.loop_depth -= 1;
+            }
+        }
+        Statement::Expression(expr) => {
+            vm.evaluate_expression(branch_id, expr)?;
+        }
+        Statement::NetworkRequest { .. } => {
+            let branch = vm.get_branch_mut(branch_id)?;
+            branch.local_clock += 5;
+            branch.consume_budget(5)?;
+        }
+    }
+    Ok(())
+}
