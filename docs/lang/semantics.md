@@ -12,6 +12,14 @@ ICTL tracks value state explicitly:
 - `inspect(target) { ... }` and `debug(x)` / `log(x)` are non-consuming observables (read-only). They do not change `target` state or field decay.
 - `print(x)` is consuming, following normal entropic evaluation semantics.
 
+### Promises (`defer` / `await`)
+
+- `defer cap(...) deadline Nms` creates `EntropicState::Pending` with `ready_at` and `deadline_at` in the current branch.
+- `await(x)` advances branch `local_clock` to `ready_at` when pending and updates entropic state:
+  - resolves to `Valid(payload)` if within deadline
+  - sets `Consumed` if past deadline
+- `match entropy(x)` supports `Pending(...)`, `Valid(...)`, `Decayed(...)`, `Consumed` to branch on promise state.
+
 ## Timeline and time model
 
 - Each timeline (`Timeline`) has:

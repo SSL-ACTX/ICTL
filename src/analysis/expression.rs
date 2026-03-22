@@ -97,7 +97,8 @@ pub(crate) fn analyze_expression(
         Expression::ChannelReceive(_)
         | Expression::Literal(_)
         | Expression::Integer(_)
-        | Expression::ArrayLiteral(_) => Ok(()),
+        | Expression::ArrayLiteral(_)
+        | Expression::Deferred { .. } => Ok(()),
         Expression::BinaryOp { left, right, .. } => {
             analyze_expression(analyzer, left)?;
             analyze_expression(analyzer, right)?;
@@ -139,7 +140,8 @@ pub(crate) fn analyze_expression_nonconsuming(
         }
         Expression::ChannelReceive(_)
         | Expression::Literal(_)
-        | Expression::Integer(_) => Ok(()),
+        | Expression::Integer(_)
+        | Expression::Deferred { .. } => Ok(()),
         Expression::BinaryOp { left, right, .. } => {
             analyze_expression_nonconsuming(analyzer, left)?;
             analyze_expression_nonconsuming(analyzer, right)?;
@@ -183,6 +185,7 @@ pub(crate) fn estimate_expression_cost(
         | Expression::ChannelReceive(_)
         | Expression::Identifier(_)
         | Expression::Literal(_)
-        | Expression::Integer(_) => 1,
+        | Expression::Integer(_)
+        | Expression::Deferred { .. } => 1,
     }
 }

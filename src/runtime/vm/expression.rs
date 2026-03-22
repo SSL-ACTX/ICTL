@@ -84,18 +84,40 @@ impl Vm {
             Expression::Integer(v) => Ok(Payload::Integer(*v)),
             Expression::Identifier(name) => {
                 let branch = self.get_branch_mut(branch_id)?;
-                if consuming {
-                    let val = branch.arena.consume(name)?;
-                    Ok(val)
-                } else {
-                    let payload = branch.arena.peek(name).ok_or_else(|| {
-                        TemporalError::MemoryFault(MemoryError::AlreadyConsumed)
-                    })?;
-                    Ok(payload)
+                match branch.arena.bindings.get(name) {
+                    Some(EntropicState::Pending(_)) => {
+                        Err(TemporalError::EvalError(format!(
+                            "pending value {} must be awaited",
+                            name
+                        )))
+                    }
+                    _ => {
+                        if consuming {
+                            let val = branch.arena.consume(name)?;
+                            Ok(val)
+                        } else {
+                            let payload =
+                                branch.arena.peek(name).ok_or_else(|| {
+                                    TemporalError::MemoryFault(
+                                        MemoryError::AlreadyConsumed,
+                                    )
+                                })?;
+                            Ok(payload)
+                        }
+                    }
                 }
             }
             Expression::FieldAccess { parent, field } => {
                 let branch = self.get_branch_mut(branch_id)?;
+                if let Some(EntropicState::Pending(_)) =
+                    branch.arena.bindings.get(parent)
+                {
+                    return Err(TemporalError::EvalError(format!(
+                        "pending value {} must be awaited",
+                        parent
+                    )));
+                }
+
                 if consuming {
                     let val = branch.arena.consume_field(parent, field)?;
                     Ok(val)
@@ -148,6 +170,9 @@ impl Vm {
                     ))
                 })?;
                 Ok(payload)
+            }
+            Expression::Deferred { .. } => {
+                Ok(Payload::String("pending".to_string()))
             }
             Expression::Call { routine, args } => {
                 self.evaluate_call(branch_id, routine, args)

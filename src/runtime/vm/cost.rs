@@ -71,6 +71,7 @@ impl Vm {
             Statement::MatchEntropy {
                 valid_branch,
                 decayed_branch,
+                pending_branch,
                 consumed_branch,
                 ..
             } => {
@@ -82,11 +83,18 @@ impl Vm {
                     .as_ref()
                     .map(|(_, body)| self.estimate_block_cost(body))
                     .unwrap_or(0);
+                let pending_cost = pending_branch
+                    .as_ref()
+                    .map(|body| self.estimate_block_cost(body))
+                    .unwrap_or(0);
                 let consumed_cost = consumed_branch
                     .as_ref()
                     .map(|body| self.estimate_block_cost(body))
                     .unwrap_or(0);
-                1 + valid_cost.max(decayed_cost).max(consumed_cost)
+                1 + valid_cost
+                    .max(decayed_cost)
+                    .max(pending_cost)
+                    .max(consumed_cost)
             }
             Statement::Collapse => 0,
             Statement::SplitMap { .. } => 1,
@@ -95,6 +103,7 @@ impl Vm {
             Statement::RoutineDef { taking_ms, .. } => taking_ms.unwrap_or(0),
             Statement::Loop { max_ms, .. } => *max_ms,
             Statement::SpeculationMode(_) => 0,
+            Statement::Await(_) => 1,
             Statement::Break => 0,
         };
 

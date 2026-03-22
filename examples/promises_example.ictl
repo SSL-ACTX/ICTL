@@ -1,0 +1,75 @@
+@0ms: {
+  isolate promise_worker {
+    enable cpu(100ms)
+    enable memory(64MB)
+    require System.Log
+
+    let ds = defer System.NetworkFetch(url="api.data", latency="20") deadline 50ms
+    await(ds)
+
+    debug("pending or fetched status cannot be consumed before split")
+  }
+
+  routine process_data(peek value) taking 5ms {
+    let out = value
+    yield out
+  }
+}
+
+@10ms: {
+  split main into [w1,w2]
+}
+
+@w1: {
+  isolate worker1 {
+    require System.Log
+    match entropy(ds) {
+      Valid(v1): {
+        let w1_out = call process_data(v1)
+        print(v1)
+        require System.Log(message=w1_out)
+      }
+      Pending(p): {
+        let w1_out = "pending"
+        require System.Log(message=w1_out)
+      }
+      Consumed: {
+        let w1_out = "consumed"
+        require System.Log(message=w1_out)
+      }
+    }
+  }
+}
+
+@w2: {
+  isolate worker2 {
+    require System.Log
+    match entropy(ds) {
+      Valid(v2): {
+        let w2_out = call process_data(v2)
+        print(v2)
+        require System.Log(message=w2_out)
+      }
+      Pending(p): {
+        let w2_out = "pending"
+        require System.Log(message=w2_out)
+      }
+      Consumed: {
+        let w2_out = "consumed"
+        require System.Log(message=w2_out)
+      }
+    }
+  }
+}
+
+@20ms: {
+  merge [w1,w2] into main resolving(w1_result=w1_out,w2_result=w2_out)
+
+  isolate merge_logger {
+    require System.Log
+    let ready = "ok"
+    require System.Log(message=w1_result)
+    require System.Log(message=w2_result)
+  }
+}
+

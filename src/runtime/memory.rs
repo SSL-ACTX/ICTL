@@ -18,9 +18,19 @@ pub enum MemoryError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPromise {
+    pub capability: String,
+    pub params: HashMap<String, String>,
+    pub requested_at: u64,
+    pub ready_at: u64,
+    pub deadline_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntropicState {
     Valid(Payload),
     Decayed(HashMap<String, EntropicState>),
+    Pending(PendingPromise),
     Consumed,
 }
 
@@ -55,6 +65,7 @@ impl std::fmt::Display for Payload {
                                 .collect();
                             format!("{}: {{ {} }}", k, fields.join(", "))
                         }
+                        EntropicState::Pending(_) => format!("{}: <pending>", k),
                         EntropicState::Consumed => format!("{}: <consumed>", k),
                     };
                     pairs.push(s);
@@ -181,6 +192,7 @@ impl Arena {
                     .insert(identifier.to_string(), EntropicState::Decayed(fields));
                 Err(MemoryError::StructurallyDecayed)
             }
+            Some(EntropicState::Pending(_)) => Err(MemoryError::AlreadyConsumed),
             Some(EntropicState::Consumed) | None => {
                 Err(MemoryError::AlreadyConsumed)
             }
@@ -248,6 +260,11 @@ impl Arena {
         match self.bindings.get(identifier) {
             Some(EntropicState::Valid(payload)) => {
                 self.used -= payload.weight();
+                self.bindings
+                    .insert(identifier.to_string(), EntropicState::Consumed);
+                Ok(())
+            }
+            Some(EntropicState::Pending(_)) => {
                 self.bindings
                     .insert(identifier.to_string(), EntropicState::Consumed);
                 Ok(())

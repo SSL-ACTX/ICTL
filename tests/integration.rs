@@ -772,6 +772,62 @@ fn integration_network_request_syntax_parse_and_execute() -> anyhow::Result<()> 
 }
 
 #[test]
+fn integration_defer_await_success() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let dataset = defer System.NetworkFetch(url="api.data", latency="10") deadline 50ms
+      await(dataset)
+      print(dataset)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    assert_eq!(vm.root_timeline.local_clock, 12);
+    // `print` consumes its argument, so dataset should be gone after printing
+    assert!(vm.root_timeline.arena.peek("dataset").is_none());
+    Ok(())
+}
+
+#[test]
+fn integration_defer_await_timeout() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let ds = defer System.NetworkFetch(url="api.slow", latency="100") deadline 20ms
+      await(ds)
+      match entropy(ds) {
+        Pending(p): { let r = "pending" }
+        Valid(v): { let r = "valid" }
+        Consumed: { let r = "consumed" }
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let result = vm.root_timeline.arena.peek("r");
+    match result {
+        Some(Payload::String(s)) => assert_eq!(s, "consumed"),
+        _ => panic!("Expected consumed branch"),
+    }
+    Ok(())
+}
+
+#[test]
 fn integration_for_struct_iteration_source() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {

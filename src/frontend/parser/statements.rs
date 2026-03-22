@@ -370,6 +370,7 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 .unwrap_or_default();
             let mut valid_branch = None;
             let mut decayed_branch = None;
+            let mut pending_branch = None;
             let mut consumed_branch = None;
 
             for element in inner {
@@ -377,10 +378,11 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                     let text = element.as_str().trim();
                     let is_valid = text.starts_with("Valid(");
                     let is_decayed = text.starts_with("Decayed(");
+                    let is_pending = text.starts_with("Pending(");
                     let is_consumed = text.starts_with("Consumed");
 
                     let mut branch_inner = element.into_inner();
-                    if is_valid || is_decayed {
+                    if is_valid || is_decayed || is_pending {
                         let var_name = branch_inner
                             .next()
                             .map(|p| p.as_str().to_string())
@@ -397,8 +399,10 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                             .unwrap_or_default();
                         if is_valid {
                             valid_branch = Some((var_name, body));
-                        } else {
+                        } else if is_decayed {
                             decayed_branch = Some((var_name, body));
+                        } else if is_pending {
+                            pending_branch = Some(body);
                         }
                     } else if is_consumed {
                         let body = branch_inner
@@ -419,6 +423,7 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 target,
                 valid_branch,
                 decayed_branch,
+                pending_branch,
                 consumed_branch,
             }
         }
@@ -441,6 +446,14 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 .map(|p| p.as_str().replace("\"", ""))
                 .unwrap_or_default();
             Statement::NetworkRequest { domain }
+        }
+        Rule::await_stmt => {
+            let target = pair
+                .into_inner()
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            Statement::Await(target)
         }
         Rule::print_stmt => {
             let mut inner = pair.into_inner();

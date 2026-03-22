@@ -143,6 +143,16 @@ pub(crate) fn analyze_statement(
                 .branch_contexts
                 .insert(analyzer.current_branch.clone(), snapshot);
         }
+        Statement::Await(target) => {
+            let state = analyzer
+                .branch_contexts
+                .get(&analyzer.current_branch)
+                .unwrap();
+            if state.consumed.contains(target) {
+                return Err(analyzer
+                    .annotate(SemanticErrorKind::UseAfterConsume(target.clone())));
+            }
+        }
         Statement::Loop { max_ms, body } => {
             if *max_ms == 0 {
                 return Err(analyzer.annotate(SemanticErrorKind::InvalidLoopBudget));
@@ -402,6 +412,7 @@ pub(crate) fn analyze_statement(
             target: _target,
             valid_branch,
             decayed_branch,
+            pending_branch,
             consumed_branch,
         } => {
             let original_state = analyzer
@@ -452,6 +463,26 @@ pub(crate) fn analyze_statement(
                     .unwrap()
                     .yields
                     .insert(binding.clone());
+
+                for stmt in branch_body {
+                    analyze_statement(analyzer, stmt)?;
+                }
+
+                let end_state = analyzer
+                    .branch_contexts
+                    .get(&analyzer.current_branch)
+                    .cloned()
+                    .unwrap_or_default();
+                context_candidates.push(end_state);
+                analyzer.branch_contexts = saved_contexts;
+            }
+
+            if let Some(branch_body) = pending_branch {
+                let saved_contexts = analyzer.branch_contexts.clone();
+                let mut branch_contexts = analyzer.branch_contexts.clone();
+                branch_contexts
+                    .insert(analyzer.current_branch.clone(), original_state.clone());
+                analyzer.branch_contexts = branch_contexts;
 
                 for stmt in branch_body {
                     analyze_statement(analyzer, stmt)?;
@@ -672,6 +703,7 @@ pub(crate) fn estimate_statement_cost(
         Statement::MatchEntropy {
             valid_branch,
             decayed_branch,
+            pending_branch,
             consumed_branch,
             ..
         } => {
@@ -683,16 +715,24 @@ pub(crate) fn estimate_statement_cost(
                 .as_ref()
                 .map(|(_, body)| estimate_block_cost(analyzer, body))
                 .unwrap_or(0);
+            let pending_cost = pending_branch
+                .as_ref()
+                .map(|body| estimate_block_cost(analyzer, body))
+                .unwrap_or(0);
             let consumed_cost = consumed_branch
                 .as_ref()
                 .map(|body| estimate_block_cost(analyzer, body))
                 .unwrap_or(0);
-            1 + valid_cost.max(decayed_cost).max(consumed_cost)
+            1 + valid_cost
+                .max(decayed_cost)
+                .max(pending_cost)
+                .max(consumed_cost)
         }
         Statement::Collapse => 0,
         Statement::SplitMap { .. } => 1,
         Statement::Yield(_) => 0,
         Statement::Loop { max_ms, .. } => *max_ms,
+        Statement::Await(_) => 1,
         Statement::SpeculationMode(_) => 0,
         Statement::Break => 0,
         Statement::RoutineDef { taking_ms, .. } => taking_ms.unwrap_or(0),

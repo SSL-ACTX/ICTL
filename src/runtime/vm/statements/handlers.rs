@@ -3,12 +3,28 @@ use crate::frontend::ast::{
     ResolutionStrategy, SpeculationCommitMode, Statement, TimeCoordinate,
 };
 use crate::runtime::gc::GarbageCollector;
-use crate::runtime::memory::{Arena, EntropicState, MemoryError, Payload};
+use crate::runtime::memory::{
+    Arena, EntropicState, MemoryError, Payload, PendingPromise,
+};
 use crate::runtime::vm::error::TemporalError;
 use crate::runtime::vm::state::{
     AnchorPoint, Routine, SpeculationContext, Timeline, Vm,
 };
 use std::collections::{HashMap, VecDeque};
+
+fn resolve_pending_payload(promise: &PendingPromise) -> Payload {
+    if promise.capability == "System.NetworkFetch" {
+        if let Some(url) = promise.params.get("url") {
+            return Payload::String(format!("fetched:{}", url));
+        }
+    }
+
+    if let Some(value) = promise.params.get("value") {
+        return Payload::String(value.clone());
+    }
+
+    Payload::String("pending".to_string())
+}
 
 pub(crate) fn execute_statement_inner(
     vm: &mut Vm,
@@ -181,6 +197,40 @@ pub(crate) fn execute_statement_inner(
             }
             vm.set_branch_state(branch_id, original_state);
         }
+        Statement::Await(target) => {
+            let branch = vm.get_branch_mut(branch_id)?;
+            let status = branch
+                .arena
+                .bindings
+                .get(target)
+                .cloned()
+                .unwrap_or(EntropicState::Consumed);
+
+            match status {
+                EntropicState::Pending(promise) => {
+                    let current_time = branch.local_clock;
+                    if current_time < promise.ready_at {
+                        let delay = promise.ready_at - current_time;
+                        branch.local_clock = promise.ready_at;
+                        branch.consume_budget(delay)?;
+                    }
+
+                    if branch.local_clock <= promise.deadline_at {
+                        let resolved = resolve_pending_payload(&promise);
+                        branch.arena.insert(
+                            target.clone(),
+                            EntropicState::Valid(resolved),
+                        )?;
+                    } else {
+                        branch.arena.set_consumed(target)?;
+                    }
+                }
+                EntropicState::Valid(_) => { /* already available */ }
+                EntropicState::Decayed(_) | EntropicState::Consumed => {
+                    // Cannot await consumed/decayed value; no-op for now.
+                }
+            }
+        }
         Statement::Isolate(block) => {
             let (capabilities, cpu_req) = {
                 let branch = vm.get_branch_mut(branch_id)?;
@@ -245,16 +295,50 @@ pub(crate) fn execute_statement_inner(
             println!("[ictl-debug] {}", payload);
         }
         Statement::Assignment { target, expr } => {
-            let payload = vm.evaluate_expression(branch_id, expr)?;
-            if let Some(ctx) = vm.speculation_stack.last_mut() {
-                if ctx.in_commit_block {
-                    ctx.commit_vars.insert(target.clone());
+            if let Expression::Deferred {
+                capability,
+                params,
+                deadline_ms,
+            } = expr
+            {
+                let branch = vm.get_branch_mut(branch_id)?;
+                let requested_at = branch.local_clock;
+                let deadline_at = requested_at + deadline_ms;
+                let latency = params
+                    .get("latency")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or_else(|| (deadline_ms / 2).max(1));
+                let ready_at = requested_at + latency;
+
+                let request = PendingPromise {
+                    capability: capability.clone(),
+                    params: params.clone(),
+                    requested_at,
+                    ready_at,
+                    deadline_at,
+                };
+
+                branch
+                    .arena
+                    .insert(target.clone(), EntropicState::Pending(request))?;
+
+                if let Some(ctx) = vm.speculation_stack.last_mut() {
+                    if ctx.in_commit_block {
+                        ctx.commit_vars.insert(target.clone());
+                    }
                 }
+            } else {
+                let payload = vm.evaluate_expression(branch_id, expr)?;
+                if let Some(ctx) = vm.speculation_stack.last_mut() {
+                    if ctx.in_commit_block {
+                        ctx.commit_vars.insert(target.clone());
+                    }
+                }
+                let branch = vm.get_branch_mut(branch_id)?;
+                branch
+                    .arena
+                    .insert(target.clone(), EntropicState::Valid(payload))?;
             }
-            let branch = vm.get_branch_mut(branch_id)?;
-            branch
-                .arena
-                .insert(target.clone(), EntropicState::Valid(payload))?;
         }
         Statement::Split { parent, branches } => {
             let branches_str: Vec<&str> =
@@ -411,6 +495,7 @@ pub(crate) fn execute_statement_inner(
             target,
             valid_branch,
             decayed_branch,
+            pending_branch,
             consumed_branch,
         } => {
             let status = {
@@ -423,26 +508,38 @@ pub(crate) fn execute_statement_inner(
                     .unwrap_or(EntropicState::Consumed)
             };
 
-            let selected = match status {
-                EntropicState::Valid(_) => valid_branch.as_ref(),
-                EntropicState::Decayed(_) => decayed_branch.as_ref(),
-                EntropicState::Consumed => None,
-            };
-
-            if let Some((binding, body)) = selected {
-                let branch = vm.get_branch_mut(branch_id)?;
-                if let Some(payload) = branch.arena.consume(target).ok() {
-                    branch
-                        .arena
-                        .insert(binding.clone(), EntropicState::Valid(payload))?;
+            match status {
+                EntropicState::Valid(_) | EntropicState::Decayed(_) => {
+                    let selected = match status {
+                        EntropicState::Valid(_) => valid_branch.as_ref(),
+                        EntropicState::Decayed(_) => decayed_branch.as_ref(),
+                        _ => None,
+                    };
+                    if let Some((binding, body)) = selected {
+                        let branch = vm.get_branch_mut(branch_id)?;
+                        if let Some(payload) = branch.arena.consume(target).ok() {
+                            branch.arena.insert(
+                                binding.clone(),
+                                EntropicState::Valid(payload),
+                            )?;
+                        }
+                        for stmt in body {
+                            vm.execute_statement(branch_id, stmt)?;
+                        }
+                    }
                 }
-                for stmt in body {
-                    vm.execute_statement(branch_id, stmt)?;
+                EntropicState::Pending(_) => {
+                    if let Some(body) = pending_branch {
+                        for stmt in body {
+                            vm.execute_statement(branch_id, stmt)?;
+                        }
+                    }
                 }
-            } else if matches!(status, EntropicState::Consumed) {
-                if let Some(body) = consumed_branch {
-                    for stmt in body {
-                        vm.execute_statement(branch_id, stmt)?;
+                EntropicState::Consumed => {
+                    if let Some(body) = consumed_branch {
+                        for stmt in body {
+                            vm.execute_statement(branch_id, stmt)?;
+                        }
                     }
                 }
             }

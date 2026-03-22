@@ -109,8 +109,10 @@ pub enum Statement {
         target: String,
         valid_branch: Option<(String, Vec<SpannedStatement>)>,
         decayed_branch: Option<(String, Vec<SpannedStatement>)>,
+        pending_branch: Option<Vec<SpannedStatement>>,
         consumed_branch: Option<Vec<SpannedStatement>>,
     },
+    Await(String),
     If {
         condition: Expression,
         then_branch: Vec<SpannedStatement>,
@@ -235,6 +237,11 @@ pub enum Expression {
         left: Box<Expression>,
         op: BinaryOperator,
         right: Box<Expression>,
+    },
+    Deferred {
+        capability: String,
+        params: HashMap<String, String>,
+        deadline_ms: u64,
     },
 }
 

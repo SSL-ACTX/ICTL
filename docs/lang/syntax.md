@@ -37,6 +37,17 @@ A timeline block defines an execution context at a time coordinate.
 - Field access: `s.a`, with entropic field signals.
 - Clone operation: `clone(x)` (entropic clone, costs budget).
 - Channel receive: `chan_recv(chan)`.
+- Deferred promise: `defer System.NetworkFetch(url="...", latency="...") deadline Nms`
+
+### `defer` / `await` example
+
+```ictl
+@0ms: {
+  let ds = defer System.NetworkFetch(url="api.data", latency="10") deadline 50ms
+  await(ds)
+  print(ds)
+}
+```
 
 ### Simple example
 

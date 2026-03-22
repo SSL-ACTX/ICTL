@@ -34,6 +34,7 @@
 * **Channels:** Destructive message passing across timelines utilizing `open_chan`, `chan_send`, and `chan_recv`.
 * **Watchdogs & Anchors:** Monitors can reset failing branches to prior anchors (acausal resets) to dynamically recover temporal computations.
 * **Paced Iteration (`for` + `split_map`):** New iteration primitives support explicit entropic collection semantics, deterministic timing via `pacing`, and scatter-gather parallel execution with `split_map`.
+* **Promises (`defer` / `await`):** Asynchronous-style deferred effects are modeled with explicit `Pending` values in the entropic arena; `await` resolves or times out, while `match entropy(...)` handles pending/valid/consumed states.
 * **Conditional Branching (`if` / `else`):** Explicit path reconciliation is required when branches consume shared values.
 * **Speculative Branching (`speculate` / `fallback` / `collapse`):** Optimize safe trial computations with rollback and explicit commit controls; can be configured via `speculation_mode(selective|full)`.
 * **Routine Contracts (`routine` / `call`):** Temporal contract procedures with `taking Nms` and entropic parameter modes (`consume`, `clone`, `decay`, `peek`).
@@ -106,8 +107,10 @@ cargo run -- --run examples/sample.ictl
 
 ### CLI Flags
 
-  * `--check` : Execute parse and semantic analysis only.
-  * `--run` : Analyze and then execute in the VM (default behavior when omitted).
+  * `--check` : Perform semantic analysis only (no runtime execution).
+  * `--run` : Execute the program after analysis (default if neither `--check` nor `--run` is provided).
+  * `--dump-ast` : Print parsed AST structure and continue.
+  * `--dump-ir` : Print lowered IR and continue.
 
 -----
 
@@ -128,8 +131,8 @@ cargo test -- --nocapture
 >
 >   * The analyzer produces statement-level diagnostics with source spans. Use these diagnostics to quickly locate capability or causality violations.
 >   * Capability manifests (required capabilities for isolates) are enforced statically. To add a runtime handler, register it in `src/runtime/vm.rs` when initializing run-mode.
-
-  * Garbage Collection (GC) runs on branch termination or merge events to reclaim branch arenas. Heuristics can be tuned within `src/runtime/gc.rs` if necessary.
+>   * Garbage Collection (GC) runs on branch termination or merge events to reclaim branch arenas. Heuristics can be tuned within `src/runtime/gc.rs` if necessary.
+>   * `print(x)` is a language-level statement and consumes `x` through entropic expression semantics. In contrast, `System.Log` is a capability call (e.g., `require System.Log(message="...")`) that is modeled as a capability invocation and may be handled by runtime extensions.
 
 -----
 

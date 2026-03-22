@@ -60,6 +60,39 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
             let inner = pair.into_inner().next().unwrap();
             parse_expression(inner)
         }
+        Rule::defer_expr => {
+            let mut inner = pair.into_inner();
+            let capability = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut params = std::collections::HashMap::new();
+            let mut deadline_ms = 0;
+
+            if let Some(param_list) = inner.next() {
+                for param in param_list.into_inner() {
+                    let mut param_inner = param.into_inner();
+                    if let (Some(key), Some(value)) =
+                        (param_inner.next(), param_inner.next())
+                    {
+                        params.insert(
+                            key.as_str().to_string(),
+                            value.as_str().replace("\"", ""),
+                        );
+                    }
+                }
+            }
+
+            if let Some(amount) = inner.next() {
+                deadline_ms = amount.as_str().parse::<u64>().unwrap_or(0);
+            }
+
+            Expression::Deferred {
+                capability,
+                params,
+                deadline_ms,
+            }
+        }
         Rule::call_expr => {
             let mut inner = pair.into_inner();
             let routine = inner

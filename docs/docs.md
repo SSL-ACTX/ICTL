@@ -13,6 +13,7 @@ This is the top-level language documentation landing page.
 - [Advanced routing (`select` / `match entropy`)](lang/advanced_routing.md)
 - [Entropic garbage collection (GC)](lang/gc.md)
 - [Routines (`routine` / `call`)](lang/routines.md)
+- [Promises (`defer` / `await`)](lang/promises.md)
 
 ## How to use
 

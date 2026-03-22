@@ -205,6 +205,7 @@ fn lower_statement(stmt: &Statement) -> String {
         Statement::MatchEntropy { target, .. } => {
             format!("match entropy({}) {{ ... }}", target)
         }
+        Statement::Await(target) => format!("await({})", target),
         Statement::Collapse => "collapse".to_string(),
         Statement::Break => "break".to_string(),
         Statement::AcausalReset {
@@ -236,6 +237,9 @@ fn lower_expression(expr: &Expression) -> String {
             format!("[{}]", parts.join(","))
         }
         Expression::Integer(i) => format!("{}", i),
+        Expression::Deferred { capability, .. } => {
+            format!("defer {}(...)", capability)
+        }
         Expression::Call { routine, args } => {
             let args_str: Vec<String> =
                 args.iter().map(|arg| lower_expression(arg)).collect();

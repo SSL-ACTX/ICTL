@@ -1,6 +1,6 @@
 // src/ictl.pest
-WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
-COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" | COMMENT }
+COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* | "#" ~ (!"\n" ~ ANY)* }
 
 program = { SOI ~ timeline_block+ ~ EOI }
 
@@ -31,6 +31,7 @@ statement = {
     | speculation_mode_stmt
     | select_stmt
     | match_entropy_stmt
+    | await_stmt
     | if_stmt
     | break_stmt
     | loop_stmt
@@ -62,7 +63,7 @@ select_case = { "case" ~ identifier ~ "=" ~ expression ~ ":" ~ statement_block }
 timeout_clause = { "timeout" ~ ":" ~ statement_block }
 
 match_entropy_stmt = { "match" ~ "entropy" ~ "(" ~ identifier ~ ")" ~ "{" ~ entropy_branch* ~ "}" }
-entropy_branch = { "Valid" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Decayed" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Consumed" ~ ":" ~ statement_block }
+entropy_branch = { "Valid" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Decayed" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Pending" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Consumed" ~ ":" ~ statement_block }
 
 break_stmt = { "break" }
 
@@ -109,6 +110,10 @@ chan_send_stmt = { "chan_send" ~ identifier ~ "(" ~ identifier ~ ")" }
 
 watchdog_stmt = { "watchdog" ~ identifier ~ "timeout" ~ amount ~ "ms" ~ ("recovery" ~ statement_block)? }
 
+await_stmt = { "await" ~ "(" ~ identifier ~ ")" }
+
+defer_expr = { "defer" ~ capability_path ~ "(" ~ param_list? ~ ")" ~ "deadline" ~ amount ~ "ms" }
+
 reset_stmt = { "reset" ~ identifier ~ "to" ~ identifier }
 yield_stmt = { "yield" ~ identifier }
 
@@ -119,7 +124,7 @@ relational_expr = {
 additive_expr = { multiplicative_expr ~ (("+" | "-") ~ multiplicative_expr)* }
 multiplicative_expr = { unary_expr ~ (("*" | "/") ~ unary_expr)* }
 unary_expr = { "-" ~ unary_expr | primary_expr }
-primary_expr = { call_expr | chan_recv_expr | struct_lit | array_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
+primary_expr = { defer_expr | call_expr | chan_recv_expr | struct_lit | array_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
 call_expr = { "call" ~ identifier ~ "(" ~ expression_list? ~ ")" }
 expression_list = { expression ~ ("," ~ expression)* }
 

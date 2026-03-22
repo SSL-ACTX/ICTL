@@ -282,6 +282,9 @@ impl EntropicAnalyzer {
                 format!("[{}]", parts.join(","))
             }
             Expression::Integer(v) => format!("{}", v),
+            Expression::Deferred { capability, .. } => {
+                format!("defer {}(...)", capability)
+            }
             Expression::Call { routine, args } => {
                 let args_str: Vec<String> =
                     args.iter().map(|e| self.expr_snippet(e)).collect();
