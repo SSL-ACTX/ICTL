@@ -5,7 +5,7 @@ use crate::analysis::expression::{
     analyze_expression, analyze_expression_nonconsuming, estimate_expression_cost,
 };
 use crate::frontend::ast::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 pub(crate) fn analyze_statement(
     analyzer: &mut EntropicAnalyzer,

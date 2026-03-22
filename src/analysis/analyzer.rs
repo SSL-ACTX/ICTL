@@ -3,7 +3,7 @@ use crate::frontend::ast::*;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
-use crate::analysis::{expression, statement};
+use crate::analysis::statement;
 
 #[allow(dead_code)]
 #[derive(Debug, Error)]
@@ -180,28 +180,6 @@ impl EntropicAnalyzer {
         stmt: &SpannedStatement,
     ) -> Result<(), SemanticError> {
         statement::analyze_statement(self, stmt)
-    }
-
-    fn analyze_expression(
-        &mut self,
-        expr: &Expression,
-    ) -> Result<(), SemanticError> {
-        expression::analyze_expression(self, expr)
-    }
-
-    fn analyze_expression_nonconsuming(
-        &mut self,
-        expr: &Expression,
-    ) -> Result<(), SemanticError> {
-        expression::analyze_expression_nonconsuming(self, expr)
-    }
-
-    fn estimate_block_cost(&self, block: &[SpannedStatement]) -> u64 {
-        statement::estimate_block_cost(self, block)
-    }
-
-    fn estimate_statement_cost(&self, stmt: &Statement) -> u64 {
-        statement::estimate_statement_cost(self, stmt)
     }
 
     pub(crate) fn mark_consumed(&mut self, name: &str) -> Result<(), SemanticError> {
