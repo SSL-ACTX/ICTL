@@ -397,7 +397,12 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                                 rules.insert(k.as_str().to_string(), strat);
                             }
                         }
-                        reconcile = Some(MergeResolution { rules, auto: false, fallback: None, taking_ms: None });
+                        reconcile = Some(MergeResolution {
+                            rules,
+                            auto: false,
+                            fallback: None,
+                            taking_ms: None,
+                        });
                     }
                     Rule::reconcile_clause => {
                         if element.as_str().contains("auto") {
@@ -727,7 +732,12 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                                 rules.insert(k.as_str().to_string(), strat);
                             }
                         }
-                        reconcile = Some(MergeResolution { rules, auto: false, fallback: None, taking_ms: None });
+                        reconcile = Some(MergeResolution {
+                            rules,
+                            auto: false,
+                            fallback: None,
+                            taking_ms: None,
+                        });
                     }
                     _ => {}
                 }
@@ -968,9 +978,17 @@ fn parse_resolution_strategy(pair: Pair<Rule>) -> ResolutionStrategy {
                                                     match inner.as_rule() {
                                                         Rule::identifier => {
                                                             if branch.is_none() {
-                                                                branch = Some(inner.as_str().to_string());
+                                                                branch = Some(
+                                                                    inner
+                                                                        .as_str()
+                                                                        .to_string(),
+                                                                );
                                                             } else {
-                                                                anchor = Some(inner.as_str().to_string());
+                                                                anchor = Some(
+                                                                    inner
+                                                                        .as_str()
+                                                                        .to_string(),
+                                                                );
                                                             }
                                                         }
                                                         _ => {}

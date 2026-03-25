@@ -201,7 +201,6 @@ pub struct MergeResolution {
     pub taking_ms: Option<u64>,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CausalReversion {
     pub branch: String,

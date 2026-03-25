@@ -107,6 +107,24 @@ In ICTL, a topology key (e.g., `"node_1"`) is a **Relativistic Key**, not a raw 
 - `topology_union`: union of keys with per-key resolution.
 - `topology_intersect`: intersection requiring all branches to have valid key values.
 
+### 4. `on_invalid` Causal Reversion (Topological Rewind)
+`topology_union` / `topology_intersect` now support an optional `on_invalid` clause in the resolution block:
+
+```ictl
+merge [alpha, beta] into main resolving (
+  graph: topology_union {
+    "core": priority(alpha),
+    _ : decay,
+    on_invalid: rewind alpha to base
+  }
+)
+```
+
+- `on_invalid` is evaluated when the merge outcome is semantically invalid due to entropic conflicts.
+- `rewind <branch> to <anchor>` means rollback the named branch execution to the anchor and retry with a consistent causality prefix.
+
+This helps enforce deterministic conflict handling for topographical merges and supports causal reversion for robust temporal recovery.
+
 **Why this is a Superpower**
 - Graph-like data structures can evolve in each branch without cross-branch race conditions.
 - No mutex/`Arc<RwLock<T>>` complexity.

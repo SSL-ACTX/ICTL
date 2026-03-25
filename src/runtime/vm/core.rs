@@ -296,87 +296,81 @@ impl Vm {
             }
             ResolutionStrategy::Decay => EntropicState::Consumed,
             ResolutionStrategy::Auto => existing.clone(),
-            ResolutionStrategy::TopologyUnion { key_rules, default, .. } => {
-                match (existing, incoming) {
-                    (
-                        EntropicState::Valid(Payload::Struct(e_fields))
-                        | EntropicState::Valid(Payload::Topology(e_fields))
-                        | EntropicState::Decayed(e_fields),
-                        EntropicState::Valid(Payload::Struct(i_fields))
-                        | EntropicState::Valid(Payload::Topology(i_fields))
-                        | EntropicState::Decayed(i_fields),
-                    ) => {
-                        let mut merged_fields = e_fields.clone();
-                        for (k, i_val) in i_fields {
-                            if let Some(e_val) = merged_fields.get(k) {
-                                let sub_strat = key_rules.get(k).unwrap_or(default);
-                                let resolved = self.resolve_entropic_conflict(
-                                    k,
-                                    e_val,
-                                    i_val,
-                                    sub_strat,
-                                    incoming_branch,
-                                );
-                                merged_fields.insert(k.clone(), resolved);
-                            } else {
-                                merged_fields.insert(k.clone(), i_val.clone());
-                            }
-                        }
-                        match (existing, incoming) {
-                            (EntropicState::Decayed(_), _)
-                            | (_, EntropicState::Decayed(_)) => {
-                                EntropicState::Decayed(merged_fields)
-                            }
-                            (EntropicState::Valid(Payload::Topology(_)), _)
-                            | (_, EntropicState::Valid(Payload::Topology(_))) => {
-                                EntropicState::Valid(Payload::Topology(
-                                    merged_fields,
-                                ))
-                            }
-                            _ => {
-                                EntropicState::Valid(Payload::Struct(merged_fields))
-                            }
-                        }
-                    }
-                    _ => existing.clone(),
-                }
-            }
-            ResolutionStrategy::TopologyIntersect { key_rules, default, .. } => {
-                match (existing, incoming) {
-                    (
-                        EntropicState::Valid(Payload::Struct(e_fields)),
-                        EntropicState::Valid(Payload::Struct(i_fields)),
-                    )
-                    | (
-                        EntropicState::Valid(Payload::Topology(e_fields)),
-                        EntropicState::Valid(Payload::Topology(i_fields)),
-                    ) => {
-                        let mut merged_fields = HashMap::new();
-                        for (k, e_val) in e_fields {
-                            if let Some(i_val) = i_fields.get(k) {
-                                let sub_strat = key_rules.get(k).unwrap_or(default);
-                                let resolved = self.resolve_entropic_conflict(
-                                    k,
-                                    e_val,
-                                    i_val,
-                                    sub_strat,
-                                    incoming_branch,
-                                );
-                                merged_fields.insert(k.clone(), resolved);
-                            }
-                        }
-                        if matches!(
-                            existing,
-                            EntropicState::Valid(Payload::Topology(_))
-                        ) {
-                            EntropicState::Valid(Payload::Topology(merged_fields))
+            ResolutionStrategy::TopologyUnion {
+                key_rules, default, ..
+            } => match (existing, incoming) {
+                (
+                    EntropicState::Valid(Payload::Struct(e_fields))
+                    | EntropicState::Valid(Payload::Topology(e_fields))
+                    | EntropicState::Decayed(e_fields),
+                    EntropicState::Valid(Payload::Struct(i_fields))
+                    | EntropicState::Valid(Payload::Topology(i_fields))
+                    | EntropicState::Decayed(i_fields),
+                ) => {
+                    let mut merged_fields = e_fields.clone();
+                    for (k, i_val) in i_fields {
+                        if let Some(e_val) = merged_fields.get(k) {
+                            let sub_strat = key_rules.get(k).unwrap_or(default);
+                            let resolved = self.resolve_entropic_conflict(
+                                k,
+                                e_val,
+                                i_val,
+                                sub_strat,
+                                incoming_branch,
+                            );
+                            merged_fields.insert(k.clone(), resolved);
                         } else {
-                            EntropicState::Valid(Payload::Struct(merged_fields))
+                            merged_fields.insert(k.clone(), i_val.clone());
                         }
                     }
-                    _ => EntropicState::Consumed,
+                    match (existing, incoming) {
+                        (EntropicState::Decayed(_), _)
+                        | (_, EntropicState::Decayed(_)) => {
+                            EntropicState::Decayed(merged_fields)
+                        }
+                        (EntropicState::Valid(Payload::Topology(_)), _)
+                        | (_, EntropicState::Valid(Payload::Topology(_))) => {
+                            EntropicState::Valid(Payload::Topology(merged_fields))
+                        }
+                        _ => EntropicState::Valid(Payload::Struct(merged_fields)),
+                    }
                 }
-            }
+                _ => existing.clone(),
+            },
+            ResolutionStrategy::TopologyIntersect {
+                key_rules, default, ..
+            } => match (existing, incoming) {
+                (
+                    EntropicState::Valid(Payload::Struct(e_fields)),
+                    EntropicState::Valid(Payload::Struct(i_fields)),
+                )
+                | (
+                    EntropicState::Valid(Payload::Topology(e_fields)),
+                    EntropicState::Valid(Payload::Topology(i_fields)),
+                ) => {
+                    let mut merged_fields = HashMap::new();
+                    for (k, e_val) in e_fields {
+                        if let Some(i_val) = i_fields.get(k) {
+                            let sub_strat = key_rules.get(k).unwrap_or(default);
+                            let resolved = self.resolve_entropic_conflict(
+                                k,
+                                e_val,
+                                i_val,
+                                sub_strat,
+                                incoming_branch,
+                            );
+                            merged_fields.insert(k.clone(), resolved);
+                        }
+                    }
+                    if matches!(existing, EntropicState::Valid(Payload::Topology(_)))
+                    {
+                        EntropicState::Valid(Payload::Topology(merged_fields))
+                    } else {
+                        EntropicState::Valid(Payload::Struct(merged_fields))
+                    }
+                }
+                _ => EntropicState::Consumed,
+            },
             ResolutionStrategy::Custom(_) => existing.clone(),
         }
     }

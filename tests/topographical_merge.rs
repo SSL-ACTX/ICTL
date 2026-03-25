@@ -68,8 +68,8 @@ fn integration_topographical_merge_union() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
-fn integration_topographical_merge_union_on_invalid_clause() -> Result<(), Box<dyn std::error::Error>>
-{
+fn integration_topographical_merge_union_on_invalid_clause(
+) -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
     @0ms: {
         let graph = topology {
