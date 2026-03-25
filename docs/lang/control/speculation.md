@@ -50,7 +50,7 @@ speculation_mode(selective | full)
 
 ## 4. Operational Cost and Padding
 
-The total temporal cost of a `speculate` block is fixed to ensure deterministic behavior.
+The total temporal cost of a `speculate` block is fixed ensures deterministic behavior.
 
 **Cost Formula:**
 ```

@@ -1,4 +1,4 @@
-# Paced Iteration and `split_map`
+# Paced Iteration and Parallelism (Loops)
 
 This document specifies the iterative constructs in ICTL and their deterministic temporal and entropic semantics.
 
@@ -29,7 +29,34 @@ for <item> <mode> <source> [pacing <amount>ms] [(max <amount>ms)] {
 
 ---
 
-## 2. Scatter-Gather Parallelism (`split_map`)
+## 2. Fixed-Frequency `loop`
+
+The `loop` statement provides a way to execute a block of code repeatedly with a deterministic period.
+
+### Syntax
+```ictl
+loop (max <amount>ms) {
+  <statements>
+  [break]
+}
+```
+
+### `loop tick` (Real-Time Control)
+The `loop tick` is a specialized form of the loop intended for isochronous tasks.
+
+```ictl
+loop tick {
+  <statements>
+  [break]
+}
+```
+
+- **Isochronous Execution**: Each `tick` is synchronized to a fixed time slice (e.g., `1ms` or `10ms`) defined by the current `slice` context.
+- **Phase Commitment**: State changes are committed at the end of each tick boundary.
+
+---
+
+## 3. Scatter-Gather Parallelism (`split_map`)
 
 The `split_map` construct implements a deterministic parallel mapping pattern.
 
@@ -52,7 +79,7 @@ Conflicts resulting from multiple children modifying the same shared variables (
 
 ---
 
-## 3. Comparison of Iterative Constructs
+## 4. Comparison of Iterative Constructs
 
 | Construct       | Execution Model | Memory Impact           | Best For                                            |
 | :-------------- | :-------------- | :---------------------- | :-------------------------------------------------- |
