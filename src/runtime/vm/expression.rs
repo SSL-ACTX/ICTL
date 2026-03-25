@@ -58,6 +58,21 @@ impl Vm {
         Ok(Payload::Struct(evaluated_fields))
     }
 
+    fn evaluate_topology_literal(
+        &mut self,
+        branch_id: &str,
+        fields: &HashMap<String, Expression>,
+        consuming: bool,
+    ) -> Result<Payload, TemporalError> {
+        let mut evaluated_fields = HashMap::new();
+        for (name, inner_expr) in fields {
+            let payload = self
+                .evaluate_expression_with_usage(branch_id, inner_expr, consuming)?;
+            evaluated_fields.insert(name.clone(), EntropicState::Valid(payload));
+        }
+        Ok(Payload::Topology(evaluated_fields))
+    }
+
     fn evaluate_array_literal(
         &mut self,
         branch_id: &str,
@@ -136,16 +151,19 @@ impl Vm {
                                 )
                             })?;
                         match parent_payload {
-                            Payload::Struct(ref fields) => match fields.get(field) {
-                                Some(EntropicState::Valid(payload)) => {
-                                    (payload.clone(), false)
+                            Payload::Struct(ref fields)
+                            | Payload::Topology(ref fields) => {
+                                match fields.get(field) {
+                                    Some(EntropicState::Valid(payload)) => {
+                                        (payload.clone(), false)
+                                    }
+                                    _ => {
+                                        return Err(TemporalError::MemoryFault(
+                                            MemoryError::AlreadyConsumed,
+                                        ))
+                                    }
                                 }
-                                _ => {
-                                    return Err(TemporalError::MemoryFault(
-                                        MemoryError::AlreadyConsumed,
-                                    ))
-                                }
-                            },
+                            }
                             _ => {
                                 return Err(TemporalError::MemoryFault(
                                     MemoryError::NotAStruct,
@@ -159,6 +177,79 @@ impl Vm {
                 }
                 Ok(payload)
             }
+            Expression::IndexAccess { target, index } => {
+                let target_payload =
+                    self.evaluate_expression_nonconsuming(branch_id, target)?;
+                let index_payload =
+                    self.evaluate_expression_nonconsuming(branch_id, index)?;
+
+                let index_str = match index_payload {
+                    Payload::String(s) => s,
+                    Payload::Integer(i) => i.to_string(),
+                    _ => {
+                        return Err(TemporalError::EvalError(
+                            "Index must be string or integer".into(),
+                        ))
+                    }
+                };
+
+                match **target {
+                    Expression::Identifier(ref name) => {
+                        let (payload, is_consuming) = {
+                            let branch = self.get_branch_mut(branch_id)?;
+                            if consuming {
+                                let val =
+                                    branch.arena.consume_field(name, &index_str)?;
+                                (val, true)
+                            } else {
+                                match target_payload {
+                                    Payload::Topology(ref fields)
+                                    | Payload::Struct(ref fields) => {
+                                        match fields.get(&index_str) {
+                                            Some(EntropicState::Valid(p)) => {
+                                                (p.clone(), false)
+                                            }
+                                            _ => {
+                                                return Err(
+                                                    TemporalError::MemoryFault(
+                                                        MemoryError::AlreadyConsumed,
+                                                    ),
+                                                )
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        return Err(TemporalError::MemoryFault(
+                                            MemoryError::NotAStruct,
+                                        ))
+                                    }
+                                }
+                            }
+                        };
+                        if is_consuming {
+                            self.propagate_field_decay(branch_id, name, &index_str)?;
+                        }
+                        Ok(payload)
+                    }
+                    _ => {
+                        // For non-identifier targets, we just peek into the evaluated value
+                        match target_payload {
+                            Payload::Topology(ref fields)
+                            | Payload::Struct(ref fields) => {
+                                match fields.get(&index_str) {
+                                    Some(EntropicState::Valid(p)) => Ok(p.clone()),
+                                    _ => Err(TemporalError::MemoryFault(
+                                        MemoryError::AlreadyConsumed,
+                                    )),
+                                }
+                            }
+                            _ => Err(TemporalError::MemoryFault(
+                                MemoryError::NotAStruct,
+                            )),
+                        }
+                    }
+                }
+            }
             Expression::CloneOp(name) => {
                 let branch = self.get_branch_mut(branch_id)?;
                 let payload = branch.arena.peek(name).ok_or_else(|| {
@@ -170,6 +261,9 @@ impl Vm {
             }
             Expression::StructLit(fields) => {
                 self.evaluate_struct_literal(branch_id, fields, consuming)
+            }
+            Expression::TopologyLit(fields) => {
+                self.evaluate_topology_literal(branch_id, fields, consuming)
             }
             Expression::ArrayLiteral(elements) => {
                 self.evaluate_array_literal(branch_id, elements, consuming)
@@ -351,5 +445,73 @@ impl Vm {
         };
 
         Ok(result)
+    }
+
+    pub fn evaluate_entropic_state(
+        &mut self,
+        branch_id: &str,
+        expr: &Expression,
+    ) -> Result<EntropicState, TemporalError> {
+        match expr {
+            Expression::Identifier(name) => {
+                let state = {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    branch.arena.consume_entropic(name)?
+                };
+                self.propagate_entanglement(branch_id, name)?;
+                Ok(state)
+            }
+            Expression::IndexAccess { target, index } => {
+                let index_payload =
+                    self.evaluate_expression_nonconsuming(branch_id, index)?;
+                let index_str = match index_payload {
+                    Payload::String(s) => s,
+                    Payload::Integer(i) => i.to_string(),
+                    _ => {
+                        return Err(TemporalError::EvalError(
+                            "Index must be string or integer".into(),
+                        ))
+                    }
+                };
+                match **target {
+                    Expression::Identifier(ref name) => {
+                        let state = {
+                            let branch = self.get_branch_mut(branch_id)?;
+                            branch.arena.consume_field_entropic(name, &index_str)?
+                        };
+                        self.propagate_field_decay(branch_id, name, &index_str)?;
+                        Ok(state)
+                    }
+                    _ => {
+                        let target_payload = self
+                            .evaluate_expression_nonconsuming(branch_id, target)?;
+                        match target_payload {
+                            Payload::Struct(fields) | Payload::Topology(fields) => {
+                                fields.get(&index_str).cloned().ok_or(
+                                    TemporalError::MemoryFault(
+                                        MemoryError::KeyNotFound(index_str),
+                                    ),
+                                )
+                            }
+                            _ => Err(TemporalError::MemoryFault(
+                                MemoryError::NotAStruct,
+                            )),
+                        }
+                    }
+                }
+            }
+            Expression::FieldAccess { parent, field } => {
+                let state = {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    branch.arena.consume_field_entropic(parent, field)?
+                };
+                self.propagate_field_decay(branch_id, parent, field)?;
+                Ok(state)
+            }
+            _ => {
+                let payload = self.evaluate_expression(branch_id, expr)?;
+                Ok(EntropicState::Valid(payload))
+            }
+        }
     }
 }

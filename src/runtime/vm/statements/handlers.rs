@@ -588,14 +588,44 @@ pub(crate) fn execute_statement_inner(
             pending_branch,
             consumed_branch,
         } => {
-            let status = {
-                let branch = vm.get_branch_mut(branch_id)?;
-                branch
-                    .arena
-                    .bindings
-                    .get(target)
-                    .cloned()
-                    .unwrap_or(EntropicState::Consumed)
+            let status = match target {
+                Expression::Identifier(name) => {
+                    let branch = vm.get_branch_mut(branch_id)?;
+                    branch
+                        .arena
+                        .bindings
+                        .get(name)
+                        .cloned()
+                        .unwrap_or(EntropicState::Consumed)
+                }
+                Expression::IndexAccess {
+                    target: parent_expr,
+                    index,
+                } => {
+                    let index_payload =
+                        vm.evaluate_expression_nonconsuming(branch_id, index)?;
+                    let index_str = match index_payload {
+                        Payload::String(s) => s,
+                        Payload::Integer(i) => i.to_string(),
+                        _ => {
+                            return Err(TemporalError::EvalError(
+                                "Index must be string or integer".into(),
+                            ))
+                        }
+                    };
+                    let parent_payload =
+                        vm.evaluate_expression_nonconsuming(branch_id, parent_expr)?;
+                    match parent_payload {
+                        Payload::Struct(fields) | Payload::Topology(fields) => {
+                            fields
+                                .get(&index_str)
+                                .cloned()
+                                .unwrap_or(EntropicState::Consumed)
+                        }
+                        _ => EntropicState::Consumed,
+                    }
+                }
+                _ => EntropicState::Consumed,
             };
 
             match status {
@@ -606,20 +636,10 @@ pub(crate) fn execute_statement_inner(
                         _ => None,
                     };
                     if let Some((binding, body)) = selected {
-                        let (payload, _consumed) = {
-                            let branch = vm.get_branch_mut(branch_id)?;
-                            let p = branch.arena.consume(target).ok();
-                            let c = p.is_some();
-                            (p, c)
-                        };
-                        if let Some(payload) = payload {
-                            vm.propagate_entanglement(branch_id, target)?;
-                            let branch = vm.get_branch_mut(branch_id)?;
-                            branch.arena.insert(
-                                binding.clone(),
-                                EntropicState::Valid(payload),
-                            )?;
-                        }
+                        let consumed_state =
+                            vm.evaluate_entropic_state(branch_id, target)?;
+                        let branch = vm.get_branch_mut(branch_id)?;
+                        branch.arena.insert(binding.clone(), consumed_state)?;
                         for stmt in body {
                             vm.execute_statement(branch_id, stmt)?;
                         }
@@ -756,7 +776,6 @@ pub(crate) fn execute_statement_inner(
                 match mode {
                     crate::frontend::ast::ForMode::Consume => {
                         let p = branch.arena.consume(source)?;
-                        drop(branch);
                         vm.propagate_entanglement(branch_id, source)?;
                         p
                     }
@@ -859,7 +878,6 @@ pub(crate) fn execute_statement_inner(
                 match mode {
                     crate::frontend::ast::ForMode::Consume => {
                         let p = branch.arena.consume(source)?;
-                        drop(branch);
                         vm.propagate_entanglement(branch_id, source)?;
                         p
                     }

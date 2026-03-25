@@ -15,6 +15,8 @@ pub enum MemoryError {
     OutOfMemory(u64, u64),
     #[error("Clone budget exceeded")]
     CloneBudgetExceeded,
+    #[error("Key not found in topology: {0}")]
+    KeyNotFound(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +42,7 @@ pub enum Payload {
     Integer(i64),
     String(String),
     Struct(HashMap<String, EntropicState>),
+    Topology(HashMap<String, EntropicState>),
     Array(Vec<Payload>),
 }
 
@@ -71,6 +74,19 @@ impl std::fmt::Display for Payload {
                     pairs.push(s);
                 }
                 write!(f, "{{{}}}", pairs.join(", "))
+            }
+            Payload::Topology(fields) => {
+                let mut pairs: Vec<String> = Vec::new();
+                for (k, v) in fields {
+                    let s = match v {
+                        EntropicState::Valid(p) => format!("{}: {}", k, p),
+                        EntropicState::Decayed(_map) => format!("{}: Decayed", k),
+                        EntropicState::Pending(_) => format!("{}: Pending", k),
+                        EntropicState::Consumed => format!("{}: Consumed", k),
+                    };
+                    pairs.push(s);
+                }
+                write!(f, "topology {{ {} }}", pairs.join(", "))
             }
             Payload::Array(elems) => {
                 let strings: Vec<String> =
@@ -104,6 +120,23 @@ impl Payload {
                     .sum();
                 // 16 bytes overhead for struct metadata/map pointers
                 fields_weight + 16
+            }
+            Payload::Topology(fields) => {
+                let fields_weight: u64 = fields
+                    .iter()
+                    .map(|(_, state)| match state {
+                        EntropicState::Valid(p) => p.weight(),
+                        EntropicState::Decayed(f) => f
+                            .values()
+                            .map(|s| match s {
+                                EntropicState::Valid(p) => p.weight(),
+                                _ => 0,
+                            })
+                            .sum(),
+                        _ => 0,
+                    })
+                    .sum();
+                fields_weight + 32 // Higher overhead for topologies
             }
             Payload::Array(elems) => {
                 let total: u64 = elems.iter().map(|p| p.weight()).sum();
@@ -175,8 +208,6 @@ impl Arena {
             .retain(|_, v| !matches!(v, EntropicState::Consumed));
     }
 
-    /// Destructive read of a whole identifier.
-    /// Rejects moves of Decayed values to preserve structural integrity.
     pub fn consume(&mut self, identifier: &str) -> Result<Payload, MemoryError> {
         match self.bindings.remove(identifier) {
             Some(EntropicState::Valid(payload)) => {
@@ -199,12 +230,40 @@ impl Arena {
         }
     }
 
-    /// Extracts a single field, transitioning the parent to Decayed status.
+    /// Moves the entropic state out of the arena, replacing it with Consumed.
+    pub fn consume_entropic(
+        &mut self,
+        identifier: &str,
+    ) -> Result<EntropicState, MemoryError> {
+        let state = self
+            .bindings
+            .remove(identifier)
+            .ok_or(MemoryError::AlreadyConsumed)?;
+        if let EntropicState::Valid(ref p) = state {
+            self.used = self.used.saturating_sub(p.weight());
+        }
+        self.bindings
+            .insert(identifier.to_string(), EntropicState::Consumed);
+        Ok(state)
+    }
+
     pub fn consume_field(
         &mut self,
         parent: &str,
         field: &str,
     ) -> Result<Payload, MemoryError> {
+        match self.consume_field_entropic(parent, field)? {
+            EntropicState::Valid(p) => Ok(p),
+            EntropicState::Decayed(_) => Err(MemoryError::StructurallyDecayed),
+            _ => Err(MemoryError::AlreadyConsumed),
+        }
+    }
+
+    pub fn consume_field_entropic(
+        &mut self,
+        parent: &str,
+        field: &str,
+    ) -> Result<EntropicState, MemoryError> {
         let state = self
             .bindings
             .remove(parent)
@@ -212,34 +271,23 @@ impl Arena {
 
         match state {
             EntropicState::Valid(Payload::Struct(mut fields))
+            | EntropicState::Valid(Payload::Topology(mut fields))
             | EntropicState::Decayed(mut fields) => {
-                let field_state =
-                    fields.remove(field).ok_or(MemoryError::AlreadyConsumed)?;
+                let field_state = fields
+                    .remove(field)
+                    .ok_or(MemoryError::KeyNotFound(field.to_string()))?;
 
-                match field_state {
-                    EntropicState::Valid(payload) => {
-                        // Free only the weight of the specific field being extracted
-                        self.used -= payload.weight();
-
-                        // Mark specifically this field as consumed
-                        fields.insert(field.to_string(), EntropicState::Consumed);
-
-                        // Re-insert the parent as Decayed
-                        self.bindings.insert(
-                            parent.to_string(),
-                            EntropicState::Decayed(fields),
-                        );
-                        Ok(payload)
-                    }
-                    _ => {
-                        // Re-insert current state before failing
-                        self.bindings.insert(
-                            parent.to_string(),
-                            EntropicState::Decayed(fields),
-                        );
-                        Err(MemoryError::AlreadyConsumed)
-                    }
+                if let EntropicState::Valid(ref p) = field_state {
+                    self.used = self.used.saturating_sub(p.weight());
                 }
+
+                // Mark specifically this field as consumed
+                fields.insert(field.to_string(), EntropicState::Consumed);
+
+                // Re-insert the parent as Decayed
+                self.bindings
+                    .insert(parent.to_string(), EntropicState::Decayed(fields));
+                Ok(field_state)
             }
             _ => {
                 // Re-insert non-struct state
@@ -252,6 +300,10 @@ impl Arena {
     pub fn peek(&self, identifier: &str) -> Option<Payload> {
         match self.bindings.get(identifier) {
             Some(EntropicState::Valid(payload)) => Some(payload.clone()),
+            Some(EntropicState::Decayed(fields)) => {
+                // Return as a Struct payload; some internal fields may be Consumed
+                Some(Payload::Struct(fields.clone()))
+            }
             _ => None,
         }
     }

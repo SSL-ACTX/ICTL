@@ -306,7 +306,7 @@ fn lower_statement(stmt: &Statement) -> String {
             format!("select (max {}ms) {{ ... }}", max_ms)
         }
         Statement::MatchEntropy { target, .. } => {
-            format!("match entropy({}) {{ ... }}", target)
+            format!("match entropy({}) {{ ... }}", lower_expression(target))
         }
         Statement::Await(target) => format!("await({})", target),
         Statement::Collapse => "collapse".to_string(),
@@ -329,12 +329,20 @@ fn lower_expression(expr: &Expression) -> String {
         Expression::Identifier(id) => id.clone(),
         Expression::FieldAccess { parent, field } => format!("{}.{}", parent, field),
         Expression::CloneOp(id) => format!("clone({})", id),
-        Expression::StructLit(fields) => {
+        Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
             let members: Vec<String> = fields
                 .iter()
                 .map(|(k, v)| format!("{} = {}", k, lower_expression(v)))
                 .collect();
-            format!("struct {{ {} }}", members.join(", "))
+            let name = match expr {
+                Expression::StructLit(_) => "struct",
+                Expression::TopologyLit(_) => "topology",
+                _ => "unreachable",
+            };
+            format!("{} {{ {} }}", name, members.join(", "))
+        }
+        Expression::IndexAccess { target, index } => {
+            format!("{}[{}]", lower_expression(target), lower_expression(index))
         }
         Expression::ChannelReceive(chan) => format!("chan_recv({})", chan),
         Expression::ArrayLiteral(elements) => {

@@ -114,6 +114,11 @@ pub(crate) fn analyze_statement(
                     .union(&else_end_state.consumed)
                     .cloned()
                     .collect(),
+                decayed: then_end_state
+                    .decayed
+                    .union(&else_end_state.decayed)
+                    .cloned()
+                    .collect(),
                 yields: then_end_state
                     .yields
                     .union(&else_end_state.yields)
@@ -285,6 +290,7 @@ pub(crate) fn analyze_statement(
                     branch.clone(),
                     BranchState {
                         consumed: parent_state.consumed.clone(),
+                        decayed: parent_state.decayed.clone(),
                         yields: HashSet::new(),
                     },
                 );
@@ -441,7 +447,7 @@ pub(crate) fn analyze_statement(
                 .insert(analyzer.current_branch.clone(), merged_state);
         }
         Statement::MatchEntropy {
-            target: _target,
+            target,
             valid_branch,
             decayed_branch,
             pending_branch,
@@ -461,13 +467,14 @@ pub(crate) fn analyze_statement(
                 branch_contexts
                     .insert(analyzer.current_branch.clone(), original_state.clone());
                 analyzer.branch_contexts = branch_contexts;
-
                 analyzer
                     .branch_contexts
                     .get_mut(&analyzer.current_branch)
                     .unwrap()
                     .yields
                     .insert(binding.clone());
+
+                analyze_expression(analyzer, target)?;
 
                 for stmt in branch_body {
                     analyze_statement(analyzer, stmt)?;
@@ -488,13 +495,14 @@ pub(crate) fn analyze_statement(
                 branch_contexts
                     .insert(analyzer.current_branch.clone(), original_state.clone());
                 analyzer.branch_contexts = branch_contexts;
-
                 analyzer
                     .branch_contexts
                     .get_mut(&analyzer.current_branch)
                     .unwrap()
                     .yields
                     .insert(binding.clone());
+
+                analyze_expression(analyzer, target)?;
 
                 for stmt in branch_body {
                     analyze_statement(analyzer, stmt)?;
@@ -553,6 +561,7 @@ pub(crate) fn analyze_statement(
                 original_state.clone(),
                 |mut acc, s| {
                     acc.consumed.extend(s.consumed.into_iter());
+                    acc.decayed.extend(s.decayed.into_iter());
                     acc.yields.extend(s.yields.into_iter());
                     acc
                 },

@@ -57,9 +57,19 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
             }
         }
         Rule::primary_expr => {
-            let inner = pair.into_inner().next().unwrap();
-            parse_expression(inner)
+            let mut inner = pair.into_inner();
+            let mut expr = parse_expression(inner.next().unwrap());
+            while let Some(index_pair) = inner.next() {
+                let index =
+                    parse_expression(index_pair.into_inner().next().unwrap());
+                expr = Expression::IndexAccess {
+                    target: Box::new(expr),
+                    index: Box::new(index),
+                };
+            }
+            expr
         }
+        Rule::base_expr => parse_expression(pair.into_inner().next().unwrap()),
         Rule::defer_expr => {
             let mut inner = pair.into_inner();
             let capability = inner
@@ -126,7 +136,8 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default(),
         ),
-        Rule::struct_lit => {
+        Rule::struct_lit | Rule::topology_lit => {
+            let rule = pair.as_rule();
             let mut fields = HashMap::new();
             if let Some(params) = pair.into_inner().next() {
                 for p in params.into_inner() {
@@ -136,7 +147,11 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
                     }
                 }
             }
-            Expression::StructLit(fields)
+            if rule == Rule::struct_lit {
+                Expression::StructLit(fields)
+            } else {
+                Expression::TopologyLit(fields)
+            }
         }
         Rule::array_lit => {
             let mut elements = Vec::new();

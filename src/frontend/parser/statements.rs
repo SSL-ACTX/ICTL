@@ -374,10 +374,7 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
         }
         Rule::match_entropy_stmt => {
             let mut inner = pair.into_inner();
-            let target = inner
-                .next()
-                .map(|p| p.as_str().to_string())
-                .unwrap_or_default();
+            let target = parse_expression(inner.next().unwrap());
             let mut valid_branch = None;
             let mut decayed_branch = None;
             let mut pending_branch = None;

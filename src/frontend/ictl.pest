@@ -65,7 +65,7 @@ select_stmt = { "select" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ select_case
 select_case = { "case" ~ identifier ~ "=" ~ expression ~ ":" ~ statement_block }
 timeout_clause = { "timeout" ~ ":" ~ statement_block }
 
-match_entropy_stmt = { "match" ~ "entropy" ~ "(" ~ identifier ~ ")" ~ "{" ~ entropy_branch* ~ "}" }
+match_entropy_stmt = { "match" ~ "entropy" ~ "(" ~ expression ~ ")" ~ "{" ~ entropy_branch* ~ "}" }
 entropy_branch = { "Valid" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Decayed" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Pending" ~ "(" ~ identifier ~ ")" ~ ":" ~ statement_block | "Consumed" ~ ":" ~ statement_block }
 
 break_stmt = { "break" }
@@ -130,7 +130,9 @@ relational_expr = {
 additive_expr = { multiplicative_expr ~ (("+" | "-") ~ multiplicative_expr)* }
 multiplicative_expr = { unary_expr ~ (("*" | "/") ~ unary_expr)* }
 unary_expr = { "-" ~ unary_expr | primary_expr }
-primary_expr = { defer_expr | call_expr | chan_recv_expr | struct_lit | array_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
+primary_expr = { base_expr ~ index_access* }
+base_expr = { defer_expr | call_expr | chan_recv_expr | struct_lit | topology_lit | array_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
+index_access = { "[" ~ expression ~ "]" }
 call_expr = { "call" ~ identifier ~ "(" ~ expression_list? ~ ")" }
 expression_list = { expression ~ ("," ~ expression)* }
 
@@ -138,6 +140,7 @@ array_lit = { "[" ~ expression ~ ("," ~ expression)* ~ "]" }
 
 integer_literal = @{ "-"? ~ ASCII_DIGIT+ }
 struct_lit = { "struct" ~ "{" ~ param_list ~ "}" }
+topology_lit = { "topology" ~ "{" ~ param_list ~ "}" }
 clone_op   = { "clone" ~ "(" ~ identifier ~ ")" }
 field_access = { identifier ~ "." ~ identifier }
 identifier_expr = { identifier }

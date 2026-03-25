@@ -76,6 +76,7 @@ impl std::error::Error for SemanticError {
 #[derive(Clone, Default)]
 pub(crate) struct BranchState {
     pub consumed: HashSet<String>,
+    pub decayed: HashSet<String>,
     pub yields: HashSet<String>,
 }
 
@@ -192,12 +193,23 @@ impl EntropicAnalyzer {
 
     pub(crate) fn mark_consumed(&mut self, name: &str) -> Result<(), SemanticError> {
         let state = self.branch_contexts.get_mut(&self.current_branch).unwrap();
-        if state.consumed.contains(name) {
+        if state.consumed.contains(name) || state.decayed.contains(name) {
             return Err(
                 self.annotate(SemanticErrorKind::UseAfterConsume(name.to_string()))
             );
         }
         state.consumed.insert(name.to_string());
+        Ok(())
+    }
+
+    pub(crate) fn mark_decayed(&mut self, name: &str) -> Result<(), SemanticError> {
+        let state = self.branch_contexts.get_mut(&self.current_branch).unwrap();
+        if state.consumed.contains(name) {
+            return Err(
+                self.annotate(SemanticErrorKind::UseAfterConsume(name.to_string()))
+            );
+        }
+        state.decayed.insert(name.to_string());
         Ok(())
     }
 
@@ -285,6 +297,20 @@ impl EntropicAnalyzer {
                     .map(|(k, v)| format!("{} = {}", k, self.expr_snippet(v)))
                     .collect();
                 format!("struct {{ {} }}", parts.join(", "))
+            }
+            Expression::TopologyLit(fields) => {
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| format!("{} = {}", k, self.expr_snippet(v)))
+                    .collect();
+                format!("topology {{ {} }}", parts.join(", "))
+            }
+            Expression::IndexAccess { target, index } => {
+                format!(
+                    "{}[{}]",
+                    self.expr_snippet(target),
+                    self.expr_snippet(index)
+                )
             }
             Expression::ChannelReceive(id) => format!("chan_recv({})", id),
             Expression::ArrayLiteral(elements) => {

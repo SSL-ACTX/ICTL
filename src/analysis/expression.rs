@@ -74,7 +74,7 @@ pub(crate) fn analyze_expression(
             if analyzer.inspection_depth > 0 {
                 Ok(())
             } else {
-                analyzer.mark_consumed(parent)
+                analyzer.mark_decayed(parent)
             }
         }
         Expression::CloneOp(name) => {
@@ -88,10 +88,19 @@ pub(crate) fn analyze_expression(
             }
             Ok(())
         }
-        Expression::StructLit(fields) => {
+        Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
             for (_, inner_expr) in fields {
                 analyze_expression(analyzer, inner_expr)?;
             }
+            Ok(())
+        }
+        Expression::IndexAccess { target, index } => {
+            if let Expression::Identifier(name) = &**target {
+                analyzer.mark_decayed(name)?;
+            } else {
+                analyze_expression(analyzer, target)?;
+            }
+            analyze_expression_nonconsuming(analyzer, index)?;
             Ok(())
         }
         Expression::ChannelReceive(_)
@@ -126,10 +135,15 @@ pub(crate) fn analyze_expression_nonconsuming(
             }
             Ok(())
         }
-        Expression::StructLit(fields) => {
+        Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
             for (_, inner_expr) in fields {
                 analyze_expression_nonconsuming(analyzer, inner_expr)?;
             }
+            Ok(())
+        }
+        Expression::IndexAccess { target, index } => {
+            analyze_expression_nonconsuming(analyzer, target)?;
+            analyze_expression_nonconsuming(analyzer, index)?;
             Ok(())
         }
         Expression::ArrayLiteral(elements) => {
@@ -168,11 +182,15 @@ pub(crate) fn estimate_expression_cost(
             1 + estimate_expression_cost(analyzer, left)
                 + estimate_expression_cost(analyzer, right)
         }
-        Expression::StructLit(fields) => {
+        Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
             1 + fields
                 .values()
                 .map(|v| estimate_expression_cost(analyzer, v))
                 .sum::<u64>()
+        }
+        Expression::IndexAccess { target, index } => {
+            1 + estimate_expression_cost(analyzer, target)
+                + estimate_expression_cost(analyzer, index)
         }
         Expression::ArrayLiteral(elements) => {
             1 + elements

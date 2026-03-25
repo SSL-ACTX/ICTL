@@ -106,7 +106,7 @@ pub enum Statement {
         reconcile: Option<MergeResolution>,
     },
     MatchEntropy {
-        target: String,
+        target: Expression,
         valid_branch: Option<(String, Vec<SpannedStatement>)>,
         decayed_branch: Option<(String, Vec<SpannedStatement>)>,
         pending_branch: Option<Vec<SpannedStatement>>,
@@ -239,6 +239,11 @@ pub enum Expression {
     },
     CloneOp(String),
     StructLit(HashMap<String, Expression>),
+    TopologyLit(HashMap<String, Expression>),
+    IndexAccess {
+        target: Box<Expression>,
+        index: Box<Expression>,
+    },
     ArrayLiteral(Vec<Expression>),
     ChannelReceive(String),
     Integer(i64),
