@@ -62,6 +62,56 @@ match entropy(my_topology) {
 }
 ```
 
+## Relativistic Keys and Topographical Merge
+
+### 1. Pointers are Absolute; Keys are Relativistic
+In ICTL, a topology key (e.g., `"node_1"`) is a **Relativistic Key**, not a raw physical pointer. It names a semantic slot in the local timeline's arena.
+- A `split` clones the causal arena state into independent child branches.
+- Each branch gets its own physical value for the same key.
+- The same key can diverge to different states in different branches (e.g., `Valid` in one branch and `Consumed` in another).
+
+### 2. Relativistic Divergence in Action
+```ictl
+@0ms: {
+  let graph = topology {
+    core = struct { status = "stable", backup = "node_b" },
+    node_b = struct { status = "standby", backup = null }
+  }
+
+  split main into [worker_alpha, worker_beta]
+
+  @worker_alpha: {
+    let c = graph["core"]
+    c.status = "upgrading"
+  }
+
+  @worker_beta: {
+    let dead_core = consume(graph["core"])
+  }
+}
+```
+- `worker_alpha` has `graph["core"]` as `upgrading`.
+- `worker_beta` has consumed `graph["core"]`, creating an entropic hole.
+
+### 3. The Topographical Merge (Collapsing the Wavefunction)
+```ictl
+@10ms: {
+  merge [worker_alpha, worker_beta] into main resolving (
+    graph: topology_union {
+      "core": priority(worker_alpha),
+      _: decay
+    }
+  )
+}
+```
+- `topology_union`: union of keys with per-key resolution.
+- `topology_intersect`: intersection requiring all branches to have valid key values.
+
+**Why this is a Superpower**
+- Graph-like data structures can evolve in each branch without cross-branch race conditions.
+- No mutex/`Arc<RwLock<T>>` complexity.
+- Static entropic analysis tracks state across split/merge effectively.
+
 ## Implementation Details
 
 The ICTL VM uses a deterministic arena-based memory model. 

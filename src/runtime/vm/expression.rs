@@ -97,6 +97,7 @@ impl Vm {
         match expr {
             Expression::Literal(val) => Ok(Payload::String(val.clone())),
             Expression::Integer(v) => Ok(Payload::Integer(*v)),
+            Expression::Null => Ok(Payload::Null),
             Expression::Identifier(name) => {
                 let (payload, is_entangled) = {
                     let branch = self.get_branch_mut(branch_id)?;
@@ -128,55 +129,65 @@ impl Vm {
                 }
                 Ok(payload)
             }
-            Expression::FieldAccess { parent, field } => {
-                let (payload, is_consuming) = {
-                    let branch = self.get_branch_mut(branch_id)?;
-                    if let Some(EntropicState::Pending(_)) =
-                        branch.arena.bindings.get(parent)
-                    {
-                        return Err(TemporalError::EvalError(format!(
-                            "pending value {} must be awaited",
-                            parent
-                        )));
-                    }
-
-                    if consuming {
-                        let val = branch.arena.consume_field(parent, field)?;
-                        (val, true)
-                    } else {
-                        let parent_payload =
-                            branch.arena.peek(parent).ok_or_else(|| {
-                                TemporalError::MemoryFault(
-                                    MemoryError::AlreadyConsumed,
-                                )
-                            })?;
-                        match parent_payload {
-                            Payload::Struct(ref fields)
-                            | Payload::Topology(ref fields) => {
-                                match fields.get(field) {
-                                    Some(EntropicState::Valid(payload)) => {
-                                        (payload.clone(), false)
-                                    }
-                                    _ => {
-                                        return Err(TemporalError::MemoryFault(
-                                            MemoryError::AlreadyConsumed,
-                                        ))
+            Expression::FieldAccess { target, field } => match **target {
+                Expression::Identifier(ref name) => {
+                    let (payload, is_consuming) = {
+                        let branch = self.get_branch_mut(branch_id)?;
+                        if consuming {
+                            let val = branch.arena.consume_field(name, field)?;
+                            (val, true)
+                        } else {
+                            match branch.arena.bindings.get(name) {
+                                Some(EntropicState::Valid(Payload::Struct(
+                                    fields,
+                                )))
+                                | Some(EntropicState::Valid(Payload::Topology(
+                                    fields,
+                                )))
+                                | Some(EntropicState::Decayed(fields)) => {
+                                    match fields.get(field) {
+                                        Some(EntropicState::Valid(p)) => {
+                                            (p.clone(), false)
+                                        }
+                                        _ => {
+                                            return Err(TemporalError::MemoryFault(
+                                                MemoryError::AlreadyConsumed,
+                                            ))
+                                        }
                                     }
                                 }
-                            }
-                            _ => {
-                                return Err(TemporalError::MemoryFault(
-                                    MemoryError::NotAStruct,
-                                ))
+                                _ => {
+                                    return Err(TemporalError::MemoryFault(
+                                        MemoryError::NotAStruct,
+                                    ))
+                                }
                             }
                         }
+                    };
+                    if is_consuming {
+                        self.propagate_field_decay(branch_id, name, field)?;
                     }
-                };
-                if is_consuming {
-                    self.propagate_field_decay(branch_id, parent, field)?;
+                    Ok(payload)
                 }
-                Ok(payload)
-            }
+                _ => {
+                    let payload = self.evaluate_expression_with_usage(
+                        branch_id, target, consuming,
+                    )?;
+                    match payload {
+                        Payload::Struct(fields) | Payload::Topology(fields) => {
+                            match fields.get(field) {
+                                Some(EntropicState::Valid(p)) => Ok(p.clone()),
+                                _ => Err(TemporalError::MemoryFault(
+                                    MemoryError::AlreadyConsumed,
+                                )),
+                            }
+                        }
+                        _ => {
+                            Err(TemporalError::MemoryFault(MemoryError::NotAStruct))
+                        }
+                    }
+                }
+            },
             Expression::IndexAccess { target, index } => {
                 let target_payload =
                     self.evaluate_expression_nonconsuming(branch_id, target)?;
@@ -500,18 +511,93 @@ impl Vm {
                     }
                 }
             }
-            Expression::FieldAccess { parent, field } => {
-                let state = {
-                    let branch = self.get_branch_mut(branch_id)?;
-                    branch.arena.consume_field_entropic(parent, field)?
-                };
-                self.propagate_field_decay(branch_id, parent, field)?;
-                Ok(state)
-            }
+            Expression::FieldAccess { target, field } => match **target {
+                Expression::Identifier(ref name) => {
+                    let state = {
+                        let branch = self.get_branch_mut(branch_id)?;
+                        branch.arena.consume_field_entropic(name, field)?
+                    };
+                    self.propagate_field_decay(branch_id, name, field)?;
+                    Ok(state)
+                }
+                _ => {
+                    let payload = self.evaluate_expression(branch_id, target)?;
+                    match payload {
+                        Payload::Struct(fields) | Payload::Topology(fields) => {
+                            fields.get(field).cloned().ok_or(
+                                TemporalError::MemoryFault(
+                                    MemoryError::KeyNotFound(field.clone()),
+                                ),
+                            )
+                        }
+                        _ => {
+                            Err(TemporalError::MemoryFault(MemoryError::NotAStruct))
+                        }
+                    }
+                }
+            },
             _ => {
                 let payload = self.evaluate_expression(branch_id, expr)?;
                 Ok(EntropicState::Valid(payload))
             }
         }
+    }
+
+    /// Collects the access path from an expression tree without evaluating.
+    /// Returns (root_identifier, vec_of_key_strings).
+    /// For `graph["core"]` this returns ("graph", ["core"]).
+    fn collect_access_path(
+        &mut self,
+        branch_id: &str,
+        expr: &Expression,
+    ) -> Result<(String, Vec<String>), TemporalError> {
+        match expr {
+            Expression::Identifier(name) => Ok((name.clone(), vec![])),
+            Expression::FieldAccess { target, field } => {
+                let (root, mut path) =
+                    self.collect_access_path(branch_id, target)?;
+                path.push(field.clone());
+                Ok((root, path))
+            }
+            Expression::IndexAccess { target, index } => {
+                let (root, mut path) =
+                    self.collect_access_path(branch_id, target)?;
+                let idx_val =
+                    self.evaluate_expression_nonconsuming(branch_id, index)?;
+                let key = match idx_val {
+                    Payload::String(s) => s,
+                    Payload::Integer(i) => i.to_string(),
+                    _ => {
+                        return Err(TemporalError::EvalError(
+                            "Index must be string or integer".into(),
+                        ))
+                    }
+                };
+                path.push(key);
+                Ok((root, path))
+            }
+            _ => Err(TemporalError::EvalError(
+                "Invalid field update target".into(),
+            )),
+        }
+    }
+
+    pub fn update_nested_field(
+        &mut self,
+        branch_id: &str,
+        target: &Expression,
+        field: &str,
+        new_val: Payload,
+    ) -> Result<(), TemporalError> {
+        // Collect the full path: target expression gives us keys leading
+        // to the parent, then `field` is the final key to update.
+        let (root, mut path) = self.collect_access_path(branch_id, target)?;
+        path.push(field.to_string());
+
+        let branch = self.get_branch_mut(branch_id)?;
+        branch
+            .arena
+            .update_deep_field(&root, &path, new_val)
+            .map_err(TemporalError::MemoryFault)
     }
 }

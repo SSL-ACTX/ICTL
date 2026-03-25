@@ -59,13 +59,30 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
         Rule::primary_expr => {
             let mut inner = pair.into_inner();
             let mut expr = parse_expression(inner.next().unwrap());
-            while let Some(index_pair) = inner.next() {
-                let index =
-                    parse_expression(index_pair.into_inner().next().unwrap());
-                expr = Expression::IndexAccess {
-                    target: Box::new(expr),
-                    index: Box::new(index),
-                };
+            while let Some(access_pair) = inner.next() {
+                match access_pair.as_rule() {
+                    Rule::index_access => {
+                        let index = parse_expression(
+                            access_pair.into_inner().next().unwrap(),
+                        );
+                        expr = Expression::IndexAccess {
+                            target: Box::new(expr),
+                            index: Box::new(index),
+                        };
+                    }
+                    Rule::field_access_tail => {
+                        let field = access_pair
+                            .into_inner()
+                            .next()
+                            .map(|p| p.as_str().to_string())
+                            .unwrap_or_default();
+                        expr = Expression::FieldAccess {
+                            target: Box::new(expr),
+                            field,
+                        };
+                    }
+                    _ => {}
+                }
             }
             expr
         }
@@ -86,7 +103,7 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
                         (param_inner.next(), param_inner.next())
                     {
                         params.insert(
-                            key.as_str().to_string(),
+                            key.as_str().replace("\"", ""),
                             value.as_str().replace("\"", ""),
                         );
                     }
@@ -143,7 +160,10 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
                 for p in params.into_inner() {
                     let mut p_inner = p.into_inner();
                     if let (Some(k), Some(v)) = (p_inner.next(), p_inner.next()) {
-                        fields.insert(k.as_str().to_string(), parse_expression(v));
+                        fields.insert(
+                            k.as_str().replace("\"", ""),
+                            parse_expression(v),
+                        );
                     }
                 }
             }
@@ -170,8 +190,12 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
                 .next()
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
-            Expression::FieldAccess { parent, field }
+            Expression::FieldAccess {
+                target: Box::new(Expression::Identifier(parent)),
+                field,
+            }
         }
+        Rule::null => Expression::Null,
         _ => Expression::Literal(pair.as_str().to_string()),
     }
 }

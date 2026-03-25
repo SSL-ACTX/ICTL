@@ -42,6 +42,14 @@ pub(crate) fn execute_statement_inner(
                 vm.execute_statement(&target_branch, inner_stmt)?;
             }
         }
+        Statement::FieldUpdate {
+            target,
+            field,
+            value,
+        } => {
+            let new_val = vm.evaluate_expression(branch_id, value)?;
+            vm.update_nested_field(branch_id, target, field, new_val)?;
+        }
         Statement::Watchdog {
             target,
             timeout_ms,
@@ -703,53 +711,28 @@ pub(crate) fn execute_statement_inner(
 
             if let Some(reconcile_rules) = reconcile {
                 for (var, strat) in &reconcile_rules.rules {
-                    match strat {
-                        ResolutionStrategy::FirstWins | ResolutionStrategy::Auto => {
-                            if let Some(p) = then_state.arena.peek(var) {
-                                final_state
-                                    .arena
-                                    .insert(var.clone(), EntropicState::Valid(p))?;
-                            } else if let Some(p) = else_state.arena.peek(var) {
-                                final_state
-                                    .arena
-                                    .insert(var.clone(), EntropicState::Valid(p))?;
-                            } else {
-                                final_state.arena.set_consumed(var)?;
-                            }
-                        }
-                        ResolutionStrategy::Priority(branch_name) => {
-                            if branch_name == "if" {
-                                if let Some(p) = then_state.arena.peek(var) {
-                                    final_state.arena.insert(
-                                        var.clone(),
-                                        EntropicState::Valid(p),
-                                    )?;
-                                } else {
-                                    final_state.arena.set_consumed(var)?;
-                                }
-                            } else if branch_name == "else" {
-                                if let Some(p) = else_state.arena.peek(var) {
-                                    final_state.arena.insert(
-                                        var.clone(),
-                                        EntropicState::Valid(p),
-                                    )?;
-                                } else {
-                                    final_state.arena.set_consumed(var)?;
-                                }
-                            }
-                        }
-                        ResolutionStrategy::Decay => {
-                            final_state.arena.set_consumed(var)?;
-                        }
-                        ResolutionStrategy::Custom(_) => {
-                            // Apply first-wins fallback for custom
-                            if let Some(p) = then_state.arena.peek(var) {
-                                final_state
-                                    .arena
-                                    .insert(var.clone(), EntropicState::Valid(p))?;
-                            }
-                        }
-                    }
+                    let existing = then_state
+                        .arena
+                        .bindings
+                        .get(var)
+                        .cloned()
+                        .unwrap_or(EntropicState::Consumed);
+                    let incoming = else_state
+                        .arena
+                        .bindings
+                        .get(var)
+                        .cloned()
+                        .unwrap_or(EntropicState::Consumed);
+
+                    let resolved = vm.resolve_entropic_conflict(
+                        var,
+                        &existing,
+                        &incoming,
+                        strat,
+                        if cond_true { "if" } else { "else" },
+                    );
+
+                    final_state.arena.insert(var.clone(), resolved)?;
                 }
             }
 

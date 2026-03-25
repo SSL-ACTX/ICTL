@@ -5,8 +5,6 @@ use thiserror::Error;
 pub enum TemporalError {
     #[error("Temporal fault: branch budget exceeded")]
     BudgetExhausted,
-    #[error("Merge collision for key '{0}' without explicit resolution strategy")]
-    UnresolvedCollision(String),
     #[error(
         "Paradox: Attempted to rewind past a commit horizon or anchor not found"
     )]

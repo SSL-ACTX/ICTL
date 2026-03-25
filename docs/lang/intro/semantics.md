@@ -45,10 +45,6 @@ Concurrency in ICTL is modeled as isolated **Timelines** (branches).
 - **`split`**: Creates children that start with a snapshot of the parent's arena and clock.
 - **`merge`**: Recombines children into a parent. Conflicts (two branches modifying/consuming the same global state) must be resolved via explicit `reconcile` or `resolving` rules.
 
-### Speculative Execution
-- `if` and `speculate` blocks are evaluated speculatively.
-- ICTL analysis ensures that even if a branch is never "taken" at runtime, its entropic requirements are checked for consistency across all possible paths.
-
 ---
 
 ## 4. Isochronous Scheduling

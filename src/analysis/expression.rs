@@ -8,6 +8,7 @@ pub(crate) fn analyze_expression(
     expr: &Expression,
 ) -> Result<(), SemanticError> {
     match expr {
+        Expression::Null => Ok(()),
         Expression::Call { routine, args } => {
             let (params, _taking_ms) = analyzer
                 .routines
@@ -70,11 +71,14 @@ pub(crate) fn analyze_expression(
             Ok(())
         }
         Expression::Identifier(name) => analyzer.mark_consumed(name),
-        Expression::FieldAccess { parent, .. } => {
-            if analyzer.inspection_depth > 0 {
+        Expression::FieldAccess { target, .. } => {
+            if let Expression::Identifier(name) = &**target {
+                if analyzer.inspection_depth == 0 {
+                    analyzer.mark_decayed(name)?;
+                }
                 Ok(())
             } else {
-                analyzer.mark_decayed(parent)
+                analyze_expression(analyzer, target)
             }
         }
         Expression::CloneOp(name) => {
@@ -123,7 +127,9 @@ pub(crate) fn analyze_expression_nonconsuming(
     match expr {
         Expression::Call { .. } => analyze_expression(analyzer, expr),
         Expression::Identifier(_) => Ok(()),
-        Expression::FieldAccess { .. } => Ok(()),
+        Expression::FieldAccess { target, .. } => {
+            analyze_expression_nonconsuming(analyzer, target)
+        }
         Expression::CloneOp(name) => {
             let state = analyzer
                 .branch_contexts
@@ -146,6 +152,7 @@ pub(crate) fn analyze_expression_nonconsuming(
             analyze_expression_nonconsuming(analyzer, index)?;
             Ok(())
         }
+
         Expression::ArrayLiteral(elements) => {
             for inner_expr in elements {
                 analyze_expression_nonconsuming(analyzer, inner_expr)?;
@@ -155,6 +162,7 @@ pub(crate) fn analyze_expression_nonconsuming(
         Expression::ChannelReceive(_)
         | Expression::Literal(_)
         | Expression::Integer(_)
+        | Expression::Null
         | Expression::Deferred { .. } => Ok(()),
         Expression::BinaryOp { left, right, .. } => {
             analyze_expression_nonconsuming(analyzer, left)?;
@@ -204,6 +212,7 @@ pub(crate) fn estimate_expression_cost(
         | Expression::Identifier(_)
         | Expression::Literal(_)
         | Expression::Integer(_)
+        | Expression::Null
         | Expression::Deferred { .. } => 1,
     }
 }

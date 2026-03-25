@@ -22,6 +22,22 @@ pub(crate) fn analyze_statement(
             }
             analyzer.current_branch = old_branch;
         }
+        Statement::FieldUpdate { target, value, .. } => {
+            if let Expression::Identifier(name) = target {
+                let branch = analyzer
+                    .branch_contexts
+                    .get(&analyzer.current_branch)
+                    .unwrap();
+                if branch.consumed.contains(name) {
+                    return Err(analyzer.annotate(
+                        SemanticErrorKind::CrossBranchViolation(name.clone()),
+                    ));
+                }
+            } else {
+                analyze_expression(analyzer, target)?;
+            }
+            analyze_expression(analyzer, value)?;
+        }
         Statement::Watchdog { recovery, .. } => {
             for inner_stmt in recovery {
                 analyze_statement(analyzer, inner_stmt)?;
@@ -698,6 +714,9 @@ pub(crate) fn estimate_statement_cost(
         | Statement::Capability(_) => 0,
         Statement::Assignment { expr, .. } => {
             estimate_expression_cost(analyzer, expr)
+        }
+        Statement::FieldUpdate { value, .. } => {
+            estimate_expression_cost(analyzer, value)
         }
         Statement::Expression(expr) => estimate_expression_cost(analyzer, expr),
         Statement::RelativisticBlock { body, .. } => {

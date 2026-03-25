@@ -153,6 +153,29 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 milliseconds: amount,
             }
         }
+        Rule::field_update_stmt => {
+            let mut inner = pair.into_inner();
+            let target_expr = crate::frontend::parser::expressions::parse_expression(
+                inner.next().unwrap(),
+            );
+            let value = crate::frontend::parser::expressions::parse_expression(
+                inner.next().unwrap(),
+            );
+
+            if let Expression::FieldAccess { target, field } = target_expr {
+                Statement::FieldUpdate {
+                    target: *target,
+                    field,
+                    value,
+                }
+            } else {
+                Statement::Expression(Expression::BinaryOp {
+                    left: Box::new(target_expr),
+                    op: BinaryOperator::Eq, // Placeholder
+                    right: Box::new(value),
+                })
+            }
+        }
         Rule::chan_send_stmt => {
             let mut inner = pair.into_inner();
             let chan_id = inner
@@ -192,20 +215,7 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 for rule in res_rules.into_inner() {
                     let mut r_inner = rule.into_inner();
                     if let (Some(k), Some(v)) = (r_inner.next(), r_inner.next()) {
-                        let value = v.as_str();
-                        let strat = if value == "first_wins" {
-                            ResolutionStrategy::FirstWins
-                        } else if value == "decay" {
-                            ResolutionStrategy::Decay
-                        } else if let Some(inner) = value.strip_prefix("priority(") {
-                            if let Some(branch_name) = inner.strip_suffix(")") {
-                                ResolutionStrategy::Priority(branch_name.to_string())
-                            } else {
-                                ResolutionStrategy::Custom(value.to_string())
-                            }
-                        } else {
-                            ResolutionStrategy::Priority(value.to_string())
-                        };
+                        let strat = parse_resolution_strategy(v);
                         rules.insert(k.as_str().to_string(), strat);
                     }
                 }
@@ -865,4 +875,111 @@ fn parse_capability(pair: Pair<Rule>) -> Capability {
         }
     }
     Capability { path, parameters }
+}
+fn parse_resolution_strategy(pair: Pair<Rule>) -> ResolutionStrategy {
+    match pair.as_rule() {
+        Rule::resolution_strategy => {
+            if let Some(inner) = pair.clone().into_inner().next() {
+                match inner.as_rule() {
+                    Rule::topology_union => {
+                        let mut rules = HashMap::new();
+                        let mut default = Box::new(ResolutionStrategy::Decay);
+                        for rule_pair in
+                            inner.into_inner().flat_map(|rr| rr.into_inner())
+                        {
+                            let mut r_inner = rule_pair.into_inner();
+                            if let (Some(k_pair), Some(v_pair)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let k =
+                                    k_pair.as_str().trim_matches('"').to_string();
+                                let v = parse_resolution_strategy(v_pair);
+                                if k == "_" {
+                                    default = Box::new(v);
+                                } else {
+                                    rules.insert(k, v);
+                                }
+                            }
+                        }
+                        ResolutionStrategy::TopologyUnion {
+                            key_rules: rules,
+                            default,
+                        }
+                    }
+                    Rule::topology_intersect => {
+                        let mut rules = HashMap::new();
+                        let mut default = Box::new(ResolutionStrategy::Decay);
+                        for rule_pair in
+                            inner.into_inner().flat_map(|rr| rr.into_inner())
+                        {
+                            let mut r_inner = rule_pair.into_inner();
+                            if let (Some(k_pair), Some(v_pair)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let k =
+                                    k_pair.as_str().trim_matches('"').to_string();
+                                let v = parse_resolution_strategy(v_pair);
+                                if k == "_" {
+                                    default = Box::new(v);
+                                } else {
+                                    rules.insert(k, v);
+                                }
+                            }
+                        }
+                        ResolutionStrategy::TopologyIntersect {
+                            key_rules: rules,
+                            default,
+                        }
+                    }
+                    _ => {
+                        if inner.as_rule() == Rule::identifier {
+                            // This is the identifier from priority(identifier)
+                            ResolutionStrategy::Priority(inner.as_str().to_string())
+                        } else {
+                            let value = inner.as_str();
+                            if value == "first_wins" {
+                                ResolutionStrategy::FirstWins
+                            } else if value == "decay" {
+                                ResolutionStrategy::Decay
+                            } else if value == "auto" {
+                                ResolutionStrategy::Auto
+                            } else if let Some(inner_p) =
+                                value.strip_prefix("priority(")
+                            {
+                                if let Some(branch_name) = inner_p.strip_suffix(")")
+                                {
+                                    ResolutionStrategy::Priority(
+                                        branch_name.to_string(),
+                                    )
+                                } else {
+                                    ResolutionStrategy::Priority(value.to_string())
+                                }
+                            } else {
+                                ResolutionStrategy::Custom(value.to_string())
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Literal strategies without inner child rules
+                let value = pair.as_str().trim();
+                if value == "first_wins" {
+                    ResolutionStrategy::FirstWins
+                } else if value == "decay" {
+                    ResolutionStrategy::Decay
+                } else if value == "auto" {
+                    ResolutionStrategy::Auto
+                } else if let Some(inner_p) = value.strip_prefix("priority(") {
+                    if let Some(branch_name) = inner_p.strip_suffix(")") {
+                        ResolutionStrategy::Priority(branch_name.to_string())
+                    } else {
+                        ResolutionStrategy::Priority(value.to_string())
+                    }
+                } else {
+                    ResolutionStrategy::Custom(value.to_string())
+                }
+            }
+        }
+        _ => ResolutionStrategy::Custom(pair.as_str().to_string()),
+    }
 }

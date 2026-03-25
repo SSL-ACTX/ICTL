@@ -317,6 +317,18 @@ fn lower_statement(stmt: &Statement) -> String {
         } => {
             format!("reset {} to {}", target, anchor_name)
         }
+        Statement::FieldUpdate {
+            target,
+            field,
+            value,
+        } => {
+            format!(
+                "{}.{} = {}",
+                lower_expression(target),
+                field,
+                lower_expression(value)
+            )
+        }
         Statement::Entangle { variables } => {
             format!("entangle({})", variables.join(", "))
         }
@@ -327,7 +339,10 @@ fn lower_expression(expr: &Expression) -> String {
     match expr {
         Expression::Literal(l) => format!("\"{}\"", l),
         Expression::Identifier(id) => id.clone(),
-        Expression::FieldAccess { parent, field } => format!("{}.{}", parent, field),
+        Expression::Null => "null".to_string(),
+        Expression::FieldAccess { target, field } => {
+            format!("{}.{}", lower_expression(target), field)
+        }
         Expression::CloneOp(id) => format!("clone({})", id),
         Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
             let members: Vec<String> = fields

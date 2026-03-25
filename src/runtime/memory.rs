@@ -44,6 +44,7 @@ pub enum Payload {
     Struct(HashMap<String, EntropicState>),
     Topology(HashMap<String, EntropicState>),
     Array(Vec<Payload>),
+    Null,
 }
 
 impl std::fmt::Display for Payload {
@@ -73,7 +74,7 @@ impl std::fmt::Display for Payload {
                     };
                     pairs.push(s);
                 }
-                write!(f, "{{{}}}", pairs.join(", "))
+                write!(f, "struct{{{}}}", pairs.join(", "))
             }
             Payload::Topology(fields) => {
                 let mut pairs: Vec<String> = Vec::new();
@@ -93,6 +94,7 @@ impl std::fmt::Display for Payload {
                     elems.iter().map(|e| format!("{}", e)).collect();
                 write!(f, "[{}]", strings.join(", "))
             }
+            Payload::Null => write!(f, "null"),
         }
     }
 }
@@ -142,6 +144,7 @@ impl Payload {
                 let total: u64 = elems.iter().map(|p| p.weight()).sum();
                 total + 16
             }
+            Payload::Null => 8,
         }
     }
 }
@@ -356,5 +359,146 @@ impl Arena {
         let k_factor = 5;
 
         base_overhead + (payload.weight() * c_factor) + (depth as u64 * k_factor)
+    }
+
+    pub fn update_field(
+        &mut self,
+        parent: &str,
+        field: &str,
+        new_value: Payload,
+    ) -> Result<(), MemoryError> {
+        let state = self
+            .bindings
+            .remove(parent)
+            .ok_or(MemoryError::AlreadyConsumed)?;
+
+        let is_topology =
+            matches!(state, EntropicState::Valid(Payload::Topology(_)));
+        let is_struct = matches!(state, EntropicState::Valid(Payload::Struct(_)));
+
+        match state {
+            EntropicState::Valid(Payload::Struct(mut fields))
+            | EntropicState::Valid(Payload::Topology(mut fields))
+            | EntropicState::Decayed(mut fields) => {
+                let prev = fields.get(field);
+                if let Some(EntropicState::Valid(p)) = prev {
+                    self.used = self.used.saturating_sub(p.weight());
+                }
+
+                let weight = new_value.weight();
+                if self.used + weight > self.capacity {
+                    // Restore
+                    let restored = if is_struct {
+                        EntropicState::Valid(Payload::Struct(fields))
+                    } else if is_topology {
+                        EntropicState::Valid(Payload::Topology(fields))
+                    } else {
+                        EntropicState::Decayed(fields)
+                    };
+                    self.bindings.insert(parent.to_string(), restored);
+                    return Err(MemoryError::OutOfMemory(
+                        weight,
+                        self.capacity - self.used,
+                    ));
+                }
+                self.used += weight;
+
+                fields.insert(field.to_string(), EntropicState::Valid(new_value));
+                // Re-insert
+                let final_state = if is_struct {
+                    EntropicState::Valid(Payload::Struct(fields))
+                } else if is_topology {
+                    EntropicState::Valid(Payload::Topology(fields))
+                } else {
+                    EntropicState::Decayed(fields)
+                };
+                self.bindings.insert(parent.to_string(), final_state);
+                Ok(())
+            }
+            _ => {
+                self.bindings.insert(parent.to_string(), state);
+                Err(MemoryError::NotAStruct)
+            }
+        }
+    }
+
+    /// Update a deeply nested field in-place.
+    /// `path` is a sequence of keys: for `graph["core"].status = X`,
+    /// root = "graph", path = ["core", "status"].
+    pub fn update_deep_field(
+        &mut self,
+        root: &str,
+        path: &[String],
+        new_value: Payload,
+    ) -> Result<(), MemoryError> {
+        if path.len() == 1 {
+            // Simple single-level update, delegate to existing method
+            return self.update_field(root, &path[0], new_value);
+        }
+
+        let state = self
+            .bindings
+            .remove(root)
+            .ok_or(MemoryError::AlreadyConsumed)?;
+
+        let is_topology =
+            matches!(state, EntropicState::Valid(Payload::Topology(_)));
+        let is_struct = matches!(state, EntropicState::Valid(Payload::Struct(_)));
+
+        match state {
+            EntropicState::Valid(Payload::Struct(mut fields))
+            | EntropicState::Valid(Payload::Topology(mut fields))
+            | EntropicState::Decayed(mut fields) => {
+                // Navigate into nested fields
+                Self::deep_set(&mut fields, &path, new_value)?;
+
+                // Re-insert with correct variant
+                let final_state = if is_struct {
+                    EntropicState::Valid(Payload::Struct(fields))
+                } else if is_topology {
+                    EntropicState::Valid(Payload::Topology(fields))
+                } else {
+                    EntropicState::Decayed(fields)
+                };
+                self.bindings.insert(root.to_string(), final_state);
+                Ok(())
+            }
+            _ => {
+                self.bindings.insert(root.to_string(), state);
+                Err(MemoryError::NotAStruct)
+            }
+        }
+    }
+
+    /// Recursively navigate into nested HashMap fields and set the leaf value.
+    fn deep_set(
+        fields: &mut HashMap<String, EntropicState>,
+        path: &[String],
+        new_value: Payload,
+    ) -> Result<(), MemoryError> {
+        if path.is_empty() {
+            return Err(MemoryError::KeyNotFound("empty path".to_string()));
+        }
+
+        if path.len() == 1 {
+            // Leaf update
+            fields.insert(path[0].clone(), EntropicState::Valid(new_value));
+            return Ok(());
+        }
+
+        // Navigate deeper
+        let key = &path[0];
+        let entry = fields
+            .get_mut(key)
+            .ok_or(MemoryError::KeyNotFound(key.clone()))?;
+
+        match entry {
+            EntropicState::Valid(Payload::Struct(inner))
+            | EntropicState::Valid(Payload::Topology(inner))
+            | EntropicState::Decayed(inner) => {
+                Self::deep_set(inner, &path[1..], new_value)
+            }
+            _ => Err(MemoryError::NotAStruct),
+        }
     }
 }

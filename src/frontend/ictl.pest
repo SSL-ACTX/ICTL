@@ -45,6 +45,7 @@ statement = {
     | reset_stmt
     | network_request_stmt
     | entangle_stmt
+    | field_update_stmt
 }
 
 entangle_stmt = { "entangle" ~ "(" ~ identifier_list ~ ")" }
@@ -97,13 +98,24 @@ unit         = { "ms" | "KB" | "MB" | "bytes" }
 require_decl  = { "require" ~ capability_path ~ ("(" ~ param_list ~ ")")? }
 capability_path = @{ identifier ~ ("." ~ identifier)* }
 param_list      = { param ~ ("," ~ param)* }
-param           = { identifier ~ "=" ~ (string_literal | identifier) }
+param           = { (identifier | string_literal) ~ ("=" | ":") ~ expression }
 
 split_stmt = { "split" ~ identifier ~ "into" ~ "[" ~ identifier_list ~ "]" }
 merge_stmt = { "merge" ~ "[" ~ identifier_list ~ "]" ~ "into" ~ identifier ~ ("resolving" ~ "(" ~ resolution_rules ~ ")")? }
 identifier_list = { identifier ~ ("," ~ identifier)* }
 resolution_rules = { res_rule ~ ("," ~ res_rule)* }
-res_rule = { identifier ~ "=" ~ identifier }
+res_rule = { (identifier | string_literal | "_") ~ ("=" | ":") ~ resolution_strategy }
+resolution_strategy = { 
+    "first_wins" | 
+    "decay" | 
+    "auto" | 
+    "priority" ~ "(" ~ identifier ~ ")" |
+    topology_union | 
+    topology_intersect |
+    identifier
+}
+topology_union = { "topology_union" ~ "{" ~ resolution_rules ~ "}" }
+topology_intersect = { "topology_intersect" ~ "{" ~ resolution_rules ~ "}" }
 reconcile_clause = { "reconcile" ~ ("auto" | "(" ~ resolution_rules ~ ")") }
 
 anchor_stmt = { "anchor" ~ identifier }
@@ -130,8 +142,11 @@ relational_expr = {
 additive_expr = { multiplicative_expr ~ (("+" | "-") ~ multiplicative_expr)* }
 multiplicative_expr = { unary_expr ~ (("*" | "/") ~ unary_expr)* }
 unary_expr = { "-" ~ unary_expr | primary_expr }
-primary_expr = { base_expr ~ index_access* }
-base_expr = { defer_expr | call_expr | chan_recv_expr | struct_lit | topology_lit | array_lit | clone_op | field_access | integer_literal | identifier_expr | string_literal | "(" ~ expression ~ ")" }
+primary_expr = { base_expr ~ (index_access | field_access_tail)* }
+field_access_tail = { "." ~ identifier }
+field_update_stmt = { primary_expr ~ "=" ~ expression }
+null = { "null" }
+base_expr = { defer_expr | call_expr | chan_recv_expr | struct_lit | topology_lit | array_lit | clone_op | integer_literal | identifier_expr | string_literal | null | "(" ~ expression ~ ")" }
 index_access = { "[" ~ expression ~ "]" }
 call_expr = { "call" ~ identifier ~ "(" ~ expression_list? ~ ")" }
 expression_list = { expression ~ ("," ~ expression)* }

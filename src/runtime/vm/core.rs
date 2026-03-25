@@ -209,46 +209,21 @@ impl Vm {
                     TemporalError::BranchNotFound(branch_name.to_string())
                 })?;
             for (key, state) in &branch.arena.bindings {
-                if let EntropicState::Valid(payload) = state {
-                    if let Some(_existing) = merged_data.get(key) {
-                        let strategy =
-                            resolution.rules.get(key).ok_or_else(|| {
-                                TemporalError::UnresolvedCollision(key.clone())
-                            })?;
-                        eprintln!(
-                            "merge key={} existing=true branch={} strategy={:?}",
-                            key, branch_name, strategy
-                        );
-                        match strategy {
-                            ResolutionStrategy::FirstWins => { /* Keep */ }
-                            ResolutionStrategy::Auto => { /* Auto defaults to first-wins */
-                            }
-                            ResolutionStrategy::Priority(p) => {
-                                eprintln!(
-                                    "priority p={} current={}",
-                                    p, branch_name
-                                );
-                                if branch_name == p {
-                                    merged_data.insert(
-                                        key.clone(),
-                                        EntropicState::Valid(payload.clone()),
-                                    );
-                                }
-                            }
-                            ResolutionStrategy::Decay => {
-                                merged_data
-                                    .insert(key.clone(), EntropicState::Consumed);
-                            }
-                            ResolutionStrategy::Custom(_) => {
-                                // Fallback to first-wins on custom resolver.
-                            }
-                        }
-                    } else {
-                        merged_data.insert(
-                            key.clone(),
-                            EntropicState::Valid(payload.clone()),
-                        );
-                    }
+                if let Some(existing) = merged_data.get(key) {
+                    let strategy = resolution
+                        .rules
+                        .get(key)
+                        .unwrap_or(&ResolutionStrategy::FirstWins);
+                    let resolved = self.resolve_entropic_conflict(
+                        key,
+                        existing,
+                        state,
+                        strategy,
+                        branch_name,
+                    );
+                    merged_data.insert(key.clone(), resolved);
+                } else {
+                    merged_data.insert(key.clone(), state.clone());
                 }
             }
         }
@@ -299,6 +274,110 @@ impl Vm {
             self.active_branches
                 .get_mut(id)
                 .ok_or_else(|| TemporalError::BranchNotFound(id.to_string()))
+        }
+    }
+
+    pub(crate) fn resolve_entropic_conflict(
+        &self,
+        _key: &str,
+        existing: &EntropicState,
+        incoming: &EntropicState,
+        strategy: &ResolutionStrategy,
+        incoming_branch: &str,
+    ) -> EntropicState {
+        match strategy {
+            ResolutionStrategy::FirstWins => existing.clone(),
+            ResolutionStrategy::Priority(p) => {
+                if incoming_branch == p {
+                    incoming.clone()
+                } else {
+                    existing.clone()
+                }
+            }
+            ResolutionStrategy::Decay => EntropicState::Consumed,
+            ResolutionStrategy::Auto => existing.clone(),
+            ResolutionStrategy::TopologyUnion { key_rules, default } => {
+                match (existing, incoming) {
+                    (
+                        EntropicState::Valid(Payload::Struct(e_fields))
+                        | EntropicState::Valid(Payload::Topology(e_fields))
+                        | EntropicState::Decayed(e_fields),
+                        EntropicState::Valid(Payload::Struct(i_fields))
+                        | EntropicState::Valid(Payload::Topology(i_fields))
+                        | EntropicState::Decayed(i_fields),
+                    ) => {
+                        let mut merged_fields = e_fields.clone();
+                        for (k, i_val) in i_fields {
+                            if let Some(e_val) = merged_fields.get(k) {
+                                let sub_strat = key_rules.get(k).unwrap_or(default);
+                                let resolved = self.resolve_entropic_conflict(
+                                    k,
+                                    e_val,
+                                    i_val,
+                                    sub_strat,
+                                    incoming_branch,
+                                );
+                                merged_fields.insert(k.clone(), resolved);
+                            } else {
+                                merged_fields.insert(k.clone(), i_val.clone());
+                            }
+                        }
+                        match (existing, incoming) {
+                            (EntropicState::Decayed(_), _)
+                            | (_, EntropicState::Decayed(_)) => {
+                                EntropicState::Decayed(merged_fields)
+                            }
+                            (EntropicState::Valid(Payload::Topology(_)), _)
+                            | (_, EntropicState::Valid(Payload::Topology(_))) => {
+                                EntropicState::Valid(Payload::Topology(
+                                    merged_fields,
+                                ))
+                            }
+                            _ => {
+                                EntropicState::Valid(Payload::Struct(merged_fields))
+                            }
+                        }
+                    }
+                    _ => existing.clone(),
+                }
+            }
+            ResolutionStrategy::TopologyIntersect { key_rules, default } => {
+                match (existing, incoming) {
+                    (
+                        EntropicState::Valid(Payload::Struct(e_fields)),
+                        EntropicState::Valid(Payload::Struct(i_fields)),
+                    )
+                    | (
+                        EntropicState::Valid(Payload::Topology(e_fields)),
+                        EntropicState::Valid(Payload::Topology(i_fields)),
+                    ) => {
+                        let mut merged_fields = HashMap::new();
+                        for (k, e_val) in e_fields {
+                            if let Some(i_val) = i_fields.get(k) {
+                                let sub_strat = key_rules.get(k).unwrap_or(default);
+                                let resolved = self.resolve_entropic_conflict(
+                                    k,
+                                    e_val,
+                                    i_val,
+                                    sub_strat,
+                                    incoming_branch,
+                                );
+                                merged_fields.insert(k.clone(), resolved);
+                            }
+                        }
+                        if matches!(
+                            existing,
+                            EntropicState::Valid(Payload::Topology(_))
+                        ) {
+                            EntropicState::Valid(Payload::Topology(merged_fields))
+                        } else {
+                            EntropicState::Valid(Payload::Struct(merged_fields))
+                        }
+                    }
+                    _ => EntropicState::Consumed,
+                }
+            }
+            ResolutionStrategy::Custom(_) => existing.clone(),
         }
     }
 

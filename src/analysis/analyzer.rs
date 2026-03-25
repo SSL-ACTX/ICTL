@@ -287,8 +287,9 @@ impl EntropicAnalyzer {
         match expr {
             Expression::Literal(v) => format!("\"{}\"", v),
             Expression::Identifier(v) => v.clone(),
-            Expression::FieldAccess { parent, field } => {
-                format!("{}.{}", parent, field)
+            Expression::Null => "null".to_string(),
+            Expression::FieldAccess { target, field } => {
+                format!("{}.{}", self.expr_snippet(target), field)
             }
             Expression::CloneOp(v) => format!("clone({})", v),
             Expression::StructLit(fields) => {

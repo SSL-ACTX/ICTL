@@ -1,0 +1,36 @@
+warning: variant `UnresolvedCollision` is never constructed
+ --> src\runtime\vm\error.rs:9:5
+  |
+5 | pub enum TemporalError {
+  |          ------------- variant in this enum
+...
+9 |     UnresolvedCollision(St...
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `TemporalError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ictl` (bin "ictl") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running tests\topographical_merge.rs (target\debug\deps\topographical_merge-228096f1d8e5ae46.exe)
+
+running 1 test
+test integration_topographical_merge_union ... FAILED
+
+failures:
+
+---- integration_topographical_merge_union stdout ----
+Error:   --> 23:13
+   |
+23 |             graph: topology_union {
+   |             ^---
+   |
+   = expected res_rule
+
+
+failures:
+    integration_topographical_merge_union
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `--test topographical_merge`

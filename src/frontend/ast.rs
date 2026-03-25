@@ -165,6 +165,11 @@ pub enum Statement {
     Entangle {
         variables: Vec<String>,
     },
+    FieldUpdate {
+        target: Expression,
+        field: String,
+        value: Expression,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +207,14 @@ pub enum ResolutionStrategy {
     Decay,
     Auto,
     Custom(String),
+    TopologyUnion {
+        key_rules: HashMap<String, ResolutionStrategy>,
+        default: Box<ResolutionStrategy>,
+    },
+    TopologyIntersect {
+        key_rules: HashMap<String, ResolutionStrategy>,
+        default: Box<ResolutionStrategy>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,7 +247,7 @@ pub enum Expression {
     Literal(String),
     Identifier(String),
     FieldAccess {
-        parent: String,
+        target: Box<Expression>,
         field: String,
     },
     CloneOp(String),
@@ -257,6 +270,7 @@ pub enum Expression {
         params: HashMap<String, String>,
         deadline_ms: u64,
     },
+    Null,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
