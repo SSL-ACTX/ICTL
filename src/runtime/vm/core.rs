@@ -296,7 +296,7 @@ impl Vm {
             }
             ResolutionStrategy::Decay => EntropicState::Consumed,
             ResolutionStrategy::Auto => existing.clone(),
-            ResolutionStrategy::TopologyUnion { key_rules, default } => {
+            ResolutionStrategy::TopologyUnion { key_rules, default, .. } => {
                 match (existing, incoming) {
                     (
                         EntropicState::Valid(Payload::Struct(e_fields))
@@ -341,7 +341,7 @@ impl Vm {
                     _ => existing.clone(),
                 }
             }
-            ResolutionStrategy::TopologyIntersect { key_rules, default } => {
+            ResolutionStrategy::TopologyIntersect { key_rules, default, .. } => {
                 match (existing, incoming) {
                     (
                         EntropicState::Valid(Payload::Struct(e_fields)),

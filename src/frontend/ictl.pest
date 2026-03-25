@@ -101,7 +101,8 @@ param_list      = { param ~ ("," ~ param)* }
 param           = { (identifier | string_literal) ~ ("=" | ":") ~ expression }
 
 split_stmt = { "split" ~ identifier ~ "into" ~ "[" ~ identifier_list ~ "]" }
-merge_stmt = { "merge" ~ "[" ~ identifier_list ~ "]" ~ "into" ~ identifier ~ ("resolving" ~ "(" ~ resolution_rules ~ ")")? }
+merge_stmt = { "merge" ~ "[" ~ identifier_list ~ "]" ~ "into" ~ identifier ~ merge_taking_opt? ~ ("resolving" ~ "(" ~ resolution_rules ~ ")")? ~ fallback_stmt? }
+merge_taking_opt = { "taking" ~ amount ~ "ms" }
 identifier_list = { identifier ~ ("," ~ identifier)* }
 resolution_rules = { res_rule ~ ("," ~ res_rule)* }
 res_rule = { (identifier | string_literal | "_") ~ ("=" | ":") ~ resolution_strategy }
@@ -114,8 +115,10 @@ resolution_strategy = {
     topology_intersect |
     identifier
 }
-topology_union = { "topology_union" ~ "{" ~ resolution_rules ~ "}" }
-topology_intersect = { "topology_intersect" ~ "{" ~ resolution_rules ~ "}" }
+topology_union = { "topology_union" ~ "{" ~ resolution_rules ~ (on_invalid_clause)? ~ "}" }
+topology_intersect = { "topology_intersect" ~ "{" ~ resolution_rules ~ (on_invalid_clause)? ~ "}" }
+on_invalid_clause = { "on_invalid" ~ ":" ~ rewind_clause }
+rewind_clause = { "rewind" ~ identifier ~ "to" ~ identifier }
 reconcile_clause = { "reconcile" ~ ("auto" | "(" ~ resolution_rules ~ ")") }
 
 anchor_stmt = { "anchor" ~ identifier }

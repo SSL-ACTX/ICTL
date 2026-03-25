@@ -197,6 +197,15 @@ pub struct Capability {
 pub struct MergeResolution {
     pub rules: HashMap<String, ResolutionStrategy>,
     pub auto: bool,
+    pub fallback: Option<Vec<SpannedStatement>>,
+    pub taking_ms: Option<u64>,
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CausalReversion {
+    pub branch: String,
+    pub anchor: String,
 }
 
 #[allow(dead_code)]
@@ -210,10 +219,12 @@ pub enum ResolutionStrategy {
     TopologyUnion {
         key_rules: HashMap<String, ResolutionStrategy>,
         default: Box<ResolutionStrategy>,
+        on_invalid: Option<CausalReversion>,
     },
     TopologyIntersect {
         key_rules: HashMap<String, ResolutionStrategy>,
         default: Box<ResolutionStrategy>,
+        on_invalid: Option<CausalReversion>,
     },
 }
 

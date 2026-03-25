@@ -161,7 +161,6 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
             let value = crate::frontend::parser::expressions::parse_expression(
                 inner.next().unwrap(),
             );
-
             if let Expression::FieldAccess { target, field } = target_expr {
                 Statement::FieldUpdate {
                     target: *target,
@@ -210,20 +209,56 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 .next()
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
-            let mut rules = HashMap::new();
-            if let Some(res_rules) = inner.next() {
-                for rule in res_rules.into_inner() {
-                    let mut r_inner = rule.into_inner();
-                    if let (Some(k), Some(v)) = (r_inner.next(), r_inner.next()) {
-                        let strat = parse_resolution_strategy(v);
-                        rules.insert(k.as_str().to_string(), strat);
+            let mut taking_ms = None;
+            let mut resolutions = MergeResolution {
+                rules: HashMap::new(),
+                auto: false,
+                fallback: None,
+                taking_ms: None,
+            };
+            let mut fallback = None;
+
+            for element in inner {
+                match element.as_rule() {
+                    Rule::merge_taking_opt => {
+                        let ms = element
+                            .into_inner()
+                            .next()
+                            .and_then(|p| p.as_str().parse::<u64>().ok());
+                        taking_ms = ms;
                     }
+                    Rule::resolution_rules => {
+                        let mut rules = HashMap::new();
+                        for rule in element.into_inner() {
+                            let mut r_inner = rule.into_inner();
+                            if let (Some(k), Some(v)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let strat = parse_resolution_strategy(v);
+                                rules.insert(k.as_str().to_string(), strat);
+                            }
+                        }
+                        resolutions.rules = rules;
+                    }
+                    Rule::fallback_stmt => {
+                        let mut fb = Vec::new();
+                        for stmt_pair in element.into_inner() {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
+                                fb.push(parse_statement(actual_stmt));
+                            }
+                        }
+                        fallback = Some(fb);
+                    }
+                    _ => {}
                 }
             }
+            resolutions.fallback = fallback.clone();
+            resolutions.taking_ms = taking_ms;
             Statement::Merge {
                 branches,
                 target,
-                resolutions: MergeResolution { rules, auto: false },
+                resolutions,
             }
         }
         Rule::commit_stmt => {
@@ -362,13 +397,15 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                                 rules.insert(k.as_str().to_string(), strat);
                             }
                         }
-                        reconcile = Some(MergeResolution { rules, auto: false });
+                        reconcile = Some(MergeResolution { rules, auto: false, fallback: None, taking_ms: None });
                     }
                     Rule::reconcile_clause => {
                         if element.as_str().contains("auto") {
                             reconcile = Some(MergeResolution {
                                 rules: HashMap::new(),
                                 auto: true,
+                                fallback: None,
+                                taking_ms: None,
                             });
                         }
                     }
@@ -554,6 +591,8 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 Some(MergeResolution {
                     rules,
                     auto: is_auto,
+                    fallback: None,
+                    taking_ms: None,
                 })
             } else {
                 None
@@ -688,7 +727,7 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                                 rules.insert(k.as_str().to_string(), strat);
                             }
                         }
-                        reconcile = Some(MergeResolution { rules, auto: false });
+                        reconcile = Some(MergeResolution { rules, auto: false, fallback: None, taking_ms: None });
                     }
                     _ => {}
                 }
@@ -884,26 +923,77 @@ fn parse_resolution_strategy(pair: Pair<Rule>) -> ResolutionStrategy {
                     Rule::topology_union => {
                         let mut rules = HashMap::new();
                         let mut default = Box::new(ResolutionStrategy::Decay);
-                        for rule_pair in
-                            inner.into_inner().flat_map(|rr| rr.into_inner())
-                        {
-                            let mut r_inner = rule_pair.into_inner();
-                            if let (Some(k_pair), Some(v_pair)) =
-                                (r_inner.next(), r_inner.next())
-                            {
-                                let k =
-                                    k_pair.as_str().trim_matches('"').to_string();
-                                let v = parse_resolution_strategy(v_pair);
-                                if k == "_" {
-                                    default = Box::new(v);
-                                } else {
-                                    rules.insert(k, v);
+                        let mut on_invalid = None;
+                        for rule_group in inner.into_inner() {
+                            match rule_group.as_rule() {
+                                Rule::resolution_rules => {
+                                    for rule_pair in rule_group.into_inner() {
+                                        let mut r_inner = rule_pair.into_inner();
+                                        if let (Some(k_pair), Some(v_pair)) =
+                                            (r_inner.next(), r_inner.next())
+                                        {
+                                            let k = k_pair
+                                                .as_str()
+                                                .trim_matches('"')
+                                                .to_string();
+                                            let v =
+                                                parse_resolution_strategy(v_pair);
+                                            if k == "_" {
+                                                default = Box::new(v);
+                                            } else {
+                                                rules.insert(k, v);
+                                            }
+                                        }
+                                    }
                                 }
+                                Rule::on_invalid_clause => {
+                                    let mut clauses = rule_group.into_inner();
+                                    let mut branch = None;
+                                    let mut anchor = None;
+                                    while let Some(pkt) = clauses.next() {
+                                        match pkt.as_rule() {
+                                            Rule::identifier => {
+                                                if branch.is_none() {
+                                                    branch = Some(
+                                                        pkt.as_str().to_string(),
+                                                    );
+                                                } else {
+                                                    anchor = Some(
+                                                        pkt.as_str().to_string(),
+                                                    );
+                                                }
+                                            }
+                                            Rule::rewind_clause => {
+                                                for inner in pkt.into_inner() {
+                                                    match inner.as_rule() {
+                                                        Rule::identifier => {
+                                                            if branch.is_none() {
+                                                                branch = Some(inner.as_str().to_string());
+                                                            } else {
+                                                                anchor = Some(inner.as_str().to_string());
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    if let (Some(branch), Some(anchor)) =
+                                        (branch, anchor)
+                                    {
+                                        on_invalid =
+                                            Some(CausalReversion { branch, anchor });
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                         ResolutionStrategy::TopologyUnion {
                             key_rules: rules,
                             default,
+                            on_invalid,
                         }
                     }
                     Rule::topology_intersect => {
@@ -929,6 +1019,7 @@ fn parse_resolution_strategy(pair: Pair<Rule>) -> ResolutionStrategy {
                         ResolutionStrategy::TopologyIntersect {
                             key_rules: rules,
                             default,
+                            on_invalid: None,
                         }
                     }
                     _ => {
