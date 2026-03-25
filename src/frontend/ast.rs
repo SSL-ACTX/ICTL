@@ -162,6 +162,9 @@ pub enum Statement {
         target: String,
         anchor_name: String,
     },
+    Entangle {
+        variables: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

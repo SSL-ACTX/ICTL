@@ -83,63 +83,81 @@ impl Vm {
             Expression::Literal(val) => Ok(Payload::String(val.clone())),
             Expression::Integer(v) => Ok(Payload::Integer(*v)),
             Expression::Identifier(name) => {
-                let branch = self.get_branch_mut(branch_id)?;
-                match branch.arena.bindings.get(name) {
-                    Some(EntropicState::Pending(_)) => {
-                        Err(TemporalError::EvalError(format!(
-                            "pending value {} must be awaited",
-                            name
-                        )))
-                    }
-                    _ => {
-                        if consuming {
-                            let val = branch.arena.consume(name)?;
-                            Ok(val)
-                        } else {
-                            let payload =
-                                branch.arena.peek(name).ok_or_else(|| {
-                                    TemporalError::MemoryFault(
-                                        MemoryError::AlreadyConsumed,
-                                    )
-                                })?;
-                            Ok(payload)
+                let (payload, is_entangled) = {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    match branch.arena.bindings.get(name) {
+                        Some(EntropicState::Pending(_)) => {
+                            return Err(TemporalError::EvalError(format!(
+                                "pending value {} must be awaited",
+                                name
+                            )))
+                        }
+                        _ => {
+                            if consuming {
+                                let val = branch.arena.consume(name)?;
+                                (val, true)
+                            } else {
+                                let payload =
+                                    branch.arena.peek(name).ok_or_else(|| {
+                                        TemporalError::MemoryFault(
+                                            MemoryError::AlreadyConsumed,
+                                        )
+                                    })?;
+                                (payload, false)
+                            }
                         }
                     }
+                };
+                if is_entangled && consuming {
+                    self.propagate_entanglement(branch_id, name)?;
                 }
+                Ok(payload)
             }
             Expression::FieldAccess { parent, field } => {
-                let branch = self.get_branch_mut(branch_id)?;
-                if let Some(EntropicState::Pending(_)) =
-                    branch.arena.bindings.get(parent)
-                {
-                    return Err(TemporalError::EvalError(format!(
-                        "pending value {} must be awaited",
-                        parent
-                    )));
-                }
+                let (payload, is_consuming) = {
+                    let branch = self.get_branch_mut(branch_id)?;
+                    if let Some(EntropicState::Pending(_)) =
+                        branch.arena.bindings.get(parent)
+                    {
+                        return Err(TemporalError::EvalError(format!(
+                            "pending value {} must be awaited",
+                            parent
+                        )));
+                    }
 
-                if consuming {
-                    let val = branch.arena.consume_field(parent, field)?;
-                    Ok(val)
-                } else {
-                    let parent_payload =
-                        branch.arena.peek(parent).ok_or_else(|| {
-                            TemporalError::MemoryFault(MemoryError::AlreadyConsumed)
-                        })?;
-                    match parent_payload {
-                        Payload::Struct(ref fields) => match fields.get(field) {
-                            Some(EntropicState::Valid(payload)) => {
-                                Ok(payload.clone())
+                    if consuming {
+                        let val = branch.arena.consume_field(parent, field)?;
+                        (val, true)
+                    } else {
+                        let parent_payload =
+                            branch.arena.peek(parent).ok_or_else(|| {
+                                TemporalError::MemoryFault(
+                                    MemoryError::AlreadyConsumed,
+                                )
+                            })?;
+                        match parent_payload {
+                            Payload::Struct(ref fields) => match fields.get(field) {
+                                Some(EntropicState::Valid(payload)) => {
+                                    (payload.clone(), false)
+                                }
+                                _ => {
+                                    return Err(TemporalError::MemoryFault(
+                                        MemoryError::AlreadyConsumed,
+                                    ))
+                                }
+                            },
+                            _ => {
+                                return Err(TemporalError::MemoryFault(
+                                    MemoryError::NotAStruct,
+                                ))
                             }
-                            _ => Err(TemporalError::MemoryFault(
-                                MemoryError::AlreadyConsumed,
-                            )),
-                        },
-                        _ => {
-                            Err(TemporalError::MemoryFault(MemoryError::NotAStruct))
                         }
                     }
+                };
+                if is_consuming {
+                    self.propagate_field_decay(branch_id, parent, field)?;
                 }
+                Ok(payload)
             }
             Expression::CloneOp(name) => {
                 let branch = self.get_branch_mut(branch_id)?;

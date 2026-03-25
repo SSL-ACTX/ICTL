@@ -477,6 +477,7 @@ pub(crate) fn execute_statement_inner(
                 let branch = vm.get_branch_mut(branch_id)?;
                 branch.arena.consume(value_id)?
             };
+            vm.propagate_entanglement(branch_id, value_id)?;
             let target = vm.get_branch_mut(target_branch)?;
             target
                 .arena
@@ -493,18 +494,17 @@ pub(crate) fn execute_statement_inner(
                 let branch = vm.get_branch_mut(branch_id)?;
                 branch.arena.consume(value_id)?
             };
-            let isochronous = vm
-                .get_branch_mut(branch_id)?
-                .slice_ms
-                .is_some();
+            vm.propagate_entanglement(branch_id, value_id)?;
+            let isochronous = vm.get_branch_mut(branch_id)?.slice_ms.is_some();
 
             if isochronous {
-                let pending = vm.pending_channels.get_mut(chan_id).ok_or_else(|| {
-                    TemporalError::ChannelFault(format!(
-                        "Channel not found: {}",
-                        chan_id
-                    ))
-                })?;
+                let pending =
+                    vm.pending_channels.get_mut(chan_id).ok_or_else(|| {
+                        TemporalError::ChannelFault(format!(
+                            "Channel not found: {}",
+                            chan_id
+                        ))
+                    })?;
                 pending.push_back(payload);
             } else {
                 let chan = vm.channels.get_mut(chan_id).ok_or_else(|| {
@@ -606,8 +606,15 @@ pub(crate) fn execute_statement_inner(
                         _ => None,
                     };
                     if let Some((binding, body)) = selected {
-                        let branch = vm.get_branch_mut(branch_id)?;
-                        if let Some(payload) = branch.arena.consume(target).ok() {
+                        let (payload, _consumed) = {
+                            let branch = vm.get_branch_mut(branch_id)?;
+                            let p = branch.arena.consume(target).ok();
+                            let c = p.is_some();
+                            (p, c)
+                        };
+                        if let Some(payload) = payload {
+                            vm.propagate_entanglement(branch_id, target)?;
+                            let branch = vm.get_branch_mut(branch_id)?;
                             branch.arena.insert(
                                 binding.clone(),
                                 EntropicState::Valid(payload),
@@ -633,6 +640,13 @@ pub(crate) fn execute_statement_inner(
                     }
                 }
             }
+        }
+        Statement::Entangle { variables } => {
+            let mut group = std::collections::HashSet::new();
+            for var in variables {
+                group.insert((branch_id.to_string(), var.clone()));
+            }
+            vm.entanglements.push(group);
         }
         Statement::If {
             condition,
@@ -739,16 +753,18 @@ pub(crate) fn execute_statement_inner(
         } => {
             let source_payload = {
                 let branch = vm.get_branch_mut(branch_id)?;
-                let source_payload = match mode {
+                match mode {
                     crate::frontend::ast::ForMode::Consume => {
-                        branch.arena.consume(source)?
+                        let p = branch.arena.consume(source)?;
+                        drop(branch);
+                        vm.propagate_entanglement(branch_id, source)?;
+                        p
                     }
                     crate::frontend::ast::ForMode::Clone => branch
                         .arena
                         .peek(source)
                         .ok_or(MemoryError::AlreadyConsumed)?,
-                };
-                source_payload
+                }
             };
 
             let elements = match source_payload {
@@ -842,7 +858,10 @@ pub(crate) fn execute_statement_inner(
                 let branch = vm.get_branch_mut(branch_id)?;
                 match mode {
                     crate::frontend::ast::ForMode::Consume => {
-                        branch.arena.consume(source)?
+                        let p = branch.arena.consume(source)?;
+                        drop(branch);
+                        vm.propagate_entanglement(branch_id, source)?;
+                        p
                     }
                     crate::frontend::ast::ForMode::Clone => branch
                         .arena

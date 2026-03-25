@@ -264,6 +264,9 @@ impl EntropicAnalyzer {
             }
             Statement::Collapse => "collapse".to_string(),
             Statement::Break => "break".to_string(),
+            Statement::Entangle { variables } => {
+                format!("entangle({})", variables.join(","))
+            }
             _ => format!("{:?}", stmt),
         }
     }

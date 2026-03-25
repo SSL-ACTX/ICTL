@@ -23,6 +23,7 @@ impl Vm {
             routines: HashMap::new(),
             speculation_stack: Vec::new(),
             speculative_commit_mode: SpeculationCommitMode::Selective,
+            entanglements: Vec::new(),
         }
     }
 
@@ -109,6 +110,88 @@ impl Vm {
             };
             self.active_branches
                 .insert(branch_name.to_string(), new_branch);
+
+            // Propagate entanglement groups to new branch
+            let mut new_entries = Vec::new();
+            for group in &self.entanglements {
+                let mut found_parent = false;
+                let mut vars_to_add = Vec::new();
+                for (b, v) in group {
+                    if b == parent_id {
+                        found_parent = true;
+                        vars_to_add.push(v.clone());
+                    }
+                }
+                if found_parent {
+                    new_entries.push(vars_to_add);
+                }
+            }
+
+            for vars in new_entries {
+                // Find the right group to add to
+                for v in vars {
+                    for group in &mut self.entanglements {
+                        if group.contains(&(parent_id.to_string(), v.clone())) {
+                            group.insert((branch_name.to_string(), v.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn propagate_entanglement(
+        &mut self,
+        source_branch: &str,
+        var_name: &str,
+    ) -> Result<(), TemporalError> {
+        let mut groups_to_propagate = Vec::new();
+        for (i, group) in self.entanglements.iter().enumerate() {
+            if group.contains(&(source_branch.to_string(), var_name.to_string())) {
+                groups_to_propagate.push(i);
+            }
+        }
+
+        for idx in groups_to_propagate {
+            let group = self.entanglements[idx].clone();
+            for (target_branch, target_var) in group {
+                if target_branch == source_branch && target_var == var_name {
+                    continue;
+                }
+                // Mark as consumed in target branch
+                if let Ok(branch) = self.get_branch_mut(&target_branch) {
+                    branch.arena.set_consumed(&target_var).ok();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn propagate_field_decay(
+        &mut self,
+        source_branch: &str,
+        var_name: &str,
+        field_name: &str,
+    ) -> Result<(), TemporalError> {
+        let mut groups_to_propagate = Vec::new();
+        for (i, group) in self.entanglements.iter().enumerate() {
+            if group.contains(&(source_branch.to_string(), var_name.to_string())) {
+                groups_to_propagate.push(i);
+            }
+        }
+
+        for idx in groups_to_propagate {
+            let group = self.entanglements[idx].clone();
+            for (target_branch, target_var) in group {
+                if target_branch == source_branch && target_var == var_name {
+                    continue;
+                }
+                // Mark field as consumed in target branch
+                if let Ok(branch) = self.get_branch_mut(&target_branch) {
+                    branch.arena.consume_field(&target_var, field_name).ok();
+                }
+            }
         }
         Ok(())
     }

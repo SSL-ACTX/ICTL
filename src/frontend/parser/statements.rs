@@ -149,7 +149,9 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 .next()
                 .and_then(|p| p.as_str().parse::<u64>().ok())
                 .unwrap_or(0);
-            Statement::Slice { milliseconds: amount }
+            Statement::Slice {
+                milliseconds: amount,
+            }
         }
         Rule::chan_send_stmt => {
             let mut inner = pair.into_inner();
@@ -702,7 +704,8 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                     let mut body = Vec::new();
                     for stmt_pair in inner {
                         if stmt_pair.as_rule() == Rule::statement {
-                            if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
                                 body.push(parse_statement(actual_stmt));
                             }
                         }
@@ -716,7 +719,8 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                     let mut body = Vec::new();
                     if first.as_rule() == Rule::statement_block {
                         for stmt_pair in first.into_inner() {
-                            if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
                                 body.push(parse_statement(actual_stmt));
                             }
                         }
@@ -727,7 +731,8 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                     }
                     for stmt_pair in inner {
                         if stmt_pair.as_rule() == Rule::statement {
-                            if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
                                 body.push(parse_statement(actual_stmt));
                             }
                         }
@@ -763,6 +768,14 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 target,
                 anchor_name,
             }
+        }
+        Rule::entangle_stmt => {
+            let variables = pair
+                .into_inner()
+                .next()
+                .map(|p| p.into_inner().map(|id| id.as_str().to_string()).collect())
+                .unwrap_or_default();
+            Statement::Entangle { variables }
         }
         _ => Statement::Expression(parse_expression(pair)),
     };
@@ -822,14 +835,16 @@ fn parse_manifest(pair: Pair<Rule>) -> Manifest {
                     "memory" => manifest.memory_budget_bytes = Some(amount),
                     _ => {}
                 }
-            }            Rule::slice_decl => {
+            }
+            Rule::slice_decl => {
                 let amount = item
                     .into_inner()
                     .next()
                     .map(|p| p.as_str().parse::<u64>().unwrap_or(0))
                     .unwrap_or(0);
                 manifest.cpu_budget_ms = Some(amount);
-            }            Rule::require_decl => manifest.capabilities.push(parse_capability(item)),
+            }
+            Rule::require_decl => manifest.capabilities.push(parse_capability(item)),
             _ => {}
         }
     }

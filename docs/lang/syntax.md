@@ -142,6 +142,20 @@ routine <name>(<params>) taking (<amount>ms | _) { <statements> }
 - **`anchor <name>`**: Snapshots the current timeline state (clock and arena).
 - **`rewind_to(<name>)`**: Restores the timeline to the specified anchor.
 - **`watchdog <target> timeout <amount>ms [recovery <block>]`**: Monitors a branch and executes recovery logic on timeout.
+- **`reset <branch> to <anchor>`**: Implementation-level acausal reset.
+
+### Entropic Entanglement
+Links variables across isolated timelines for zero-tick cross-branch synchronization.
+
+**Syntax:**
+```ictl
+entangle(<variable_list>)
+```
+
+**Semantics:**
+- Variables in the group share the same entropic state.
+- If one variable is **consumed** or **decayed** in any branch, all entangled variables in all branches immediately transition to the same state.
+- Entanglement must be established in the parent timeline before splitting to synchronize across the resulting branches.
 
 ---
 

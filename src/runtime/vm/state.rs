@@ -37,6 +37,7 @@ pub struct Vm {
     pub pending_channels: HashMap<String, VecDeque<Payload>>,
     pub routines: HashMap<String, Routine>,
     pub(crate) speculation_stack: Vec<SpeculationContext>,
+    pub entanglements: Vec<std::collections::HashSet<(String, String)>>,
 }
 
 #[derive(Clone)]

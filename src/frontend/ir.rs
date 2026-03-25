@@ -133,6 +133,11 @@ fn lower_statement_lines(stmt: &Statement, indent: usize) -> Vec<IrInstruction> 
             args: vec![max_ms.to_string()],
             indent,
         }],
+        Statement::Entangle { variables } => vec![IrInstruction {
+            op: "ENTANGLE".to_string(),
+            args: variables.clone(),
+            indent,
+        }],
         _ => vec![IrInstruction {
             op: lower_statement(stmt),
             args: vec![],
@@ -311,6 +316,9 @@ fn lower_statement(stmt: &Statement) -> String {
             anchor_name,
         } => {
             format!("reset {} to {}", target, anchor_name)
+        }
+        Statement::Entangle { variables } => {
+            format!("entangle({})", variables.join(", "))
         }
     }
 }

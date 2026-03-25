@@ -107,6 +107,7 @@ impl Vm {
             Statement::SpeculationMode(_) => 0,
             Statement::Await(_) => 1,
             Statement::Break => 0,
+            Statement::Entangle { .. } => 0,
         };
 
         base + extra

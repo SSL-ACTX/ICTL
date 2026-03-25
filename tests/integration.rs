@@ -496,7 +496,10 @@ fn integration_loop_tick_slice_budget_enforced() -> anyhow::Result<()> {
     let program = parser::parse_ictl(source)?;
     let mut analyzer = EntropicAnalyzer::new();
     let res = analyzer.analyze_program(&program);
-    assert!(res.is_err(), "loop tick body exceeds slice should fail analyzer");
+    assert!(
+        res.is_err(),
+        "loop tick body exceeds slice should fail analyzer"
+    );
 
     Ok(())
 }
@@ -1533,5 +1536,108 @@ fn integration_split_map_collects_yields() -> anyhow::Result<()> {
 
     let out = vm.root_timeline.arena.peek("splitmap_results");
     assert!(out.is_some());
+    Ok(())
+}
+
+#[test]
+fn integration_entropic_entanglement_cross_branch() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let x = "shared"
+      entangle(x)
+      split main into [branchA, branchB]
+      @branchA: {
+        let use_x = x
+      }
+      @branchB: {
+        match entropy(x) {
+          Valid(v):
+            let status = "alive"
+          Consumed:
+            let status = "dead"
+        }
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    // 1. let x = "shared"
+    vm.execute_statement("main", &program.timelines[0].statements[0])?;
+    // 2. entangle x
+    vm.execute_statement("main", &program.timelines[0].statements[1])?;
+    // 3. split main into [branchA, branchB]
+    vm.execute_statement("main", &program.timelines[0].statements[2])?;
+
+    // 4. In branchA, consume x
+    vm.execute_statement("branchA", &program.timelines[0].statements[3])?;
+
+    // 5. In branchB, check if x is dead
+    vm.execute_statement("branchB", &program.timelines[0].statements[4])?;
+
+    let branch_b = vm.active_branches.get("branchB").unwrap();
+    let status = branch_b.arena.peek("status");
+    match status {
+        Some(Payload::String(s)) => assert_eq!(s, "dead"),
+        _ => panic!(
+            "Expected status='dead' due to entanglement propagation, got {:?}",
+            status
+        ),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn integration_entropic_entanglement_field_decay() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let p = struct { a = "1", b = "2" }
+      entangle(p)
+      split main into [branchA, branchB]
+      @branchA: {
+        let val = p.a
+      }
+      @branchB: {
+        match entropy(p) {
+          Decayed(d):
+            let status = "decayed"
+          Valid(v):
+            let status = "still_valid"
+          Consumed:
+            let status = "consumed"
+        }
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    // 1. let p = ...
+    vm.execute_statement("main", &program.timelines[0].statements[0])?;
+    // 2. entangle(p)
+    vm.execute_statement("main", &program.timelines[0].statements[1])?;
+    // 3. split
+    vm.execute_statement("main", &program.timelines[0].statements[2])?;
+
+    // 4. In branchA, let val = p.a
+    vm.execute_statement("branchA", &program.timelines[0].statements[3])?;
+
+    // 5. In branchB, check status
+    vm.execute_statement("branchB", &program.timelines[0].statements[4])?;
+
+    let branch_b = vm.active_branches.get("branchB").unwrap();
+    let status = branch_b.arena.peek("status");
+    match status {
+        Some(Payload::String(s)) => assert_eq!(s, "decayed"),
+        _ => panic!("Expected status='decayed', got {:?}", status),
+    }
+
     Ok(())
 }

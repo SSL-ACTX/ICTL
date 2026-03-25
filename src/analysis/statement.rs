@@ -165,20 +165,21 @@ pub(crate) fn analyze_statement(
             }
         }
         Statement::LoopTick { body } => {
-            let slice_ms = analyzer
-                .current_slice_ms
-                .ok_or_else(|| analyzer.annotate(SemanticErrorKind::TickLoopWithoutSlice))?;
+            let slice_ms = analyzer.current_slice_ms.ok_or_else(|| {
+                analyzer.annotate(SemanticErrorKind::TickLoopWithoutSlice)
+            })?;
 
-            let body_cost = crate::analysis::statement::estimate_block_cost(analyzer, body);
+            let body_cost =
+                crate::analysis::statement::estimate_block_cost(analyzer, body);
             if body_cost > slice_ms {
                 return Err(analyzer.annotate(
                     SemanticErrorKind::TickLoopBudgetExceeded(body_cost, slice_ms),
                 ));
             }
 
-            let has_break = body.iter().any(|inner_stmt| {
-                matches!(inner_stmt.stmt, Statement::Break)
-            });
+            let has_break = body
+                .iter()
+                .any(|inner_stmt| matches!(inner_stmt.stmt, Statement::Break));
 
             if !has_break {
                 return Err(analyzer.annotate(SemanticErrorKind::TickLoopNeedsBreak));
@@ -643,6 +644,7 @@ pub(crate) fn analyze_statement(
         }
         Statement::Anchor(_)
         | Statement::Rewind(_)
+        | Statement::Entangle { .. }
         | Statement::ChannelOpen { .. }
         | Statement::NetworkRequest { .. }
         | Statement::AcausalReset { .. } => {}
@@ -768,6 +770,7 @@ pub(crate) fn estimate_statement_cost(
         Statement::Await(_) => 1,
         Statement::SpeculationMode(_) => 0,
         Statement::Break => 0,
+        Statement::Entangle { .. } => 0,
         Statement::RoutineDef { taking_ms, .. } => taking_ms.unwrap_or(0),
     };
     base + extra

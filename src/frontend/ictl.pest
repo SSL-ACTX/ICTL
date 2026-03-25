@@ -44,7 +44,10 @@ statement = {
     | watchdog_stmt
     | reset_stmt
     | network_request_stmt
+    | entangle_stmt
 }
+
+entangle_stmt = { "entangle" ~ "(" ~ identifier_list ~ ")" }
 
 print_stmt = { "print" ~ "(" ~ expression ~ ")" }
 
