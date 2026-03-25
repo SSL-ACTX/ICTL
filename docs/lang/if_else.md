@@ -1,55 +1,71 @@
-# ICTL Conditional Branches (`if` / `else`)
+# Conditional Execution (`if` / `else`)
 
-## Branch semantics
+This document specifies the behavior of conditional branches in ICTL, including speculative execution and state reconciliation.
 
-`if` in ICTL is a deterministic, analyzer-driven conditional with entropic resource safety.
+---
 
-### Execute path
-
-- At runtime, only the taken branch is executed.
-- Analyzer still models both `then` and `else` paths to check entropy and value state.
-
-### Entropic rules
-
-- Values consumed in one branch and referenced afterward require reconciliation.
-- Without a `reconcile` rule, the analyzer can reject with a `CrossPathConsume` type error.
-- Branch-local bindings are scoped to that branch unless persisted by merge/reconcile.
-
-## Reconciliation
-
-- `reconcile (x=first_wins)`:
-  - `x` from chosen branch wins (if present), otherwise fallback path.
-- `reconcile (x=priority(if))` / `(x=priority(else))`:
-  - explicit preference for conflict resolution.
-- `reconcile (x=decay)`:
-  - enforces x as consumed/invalid in merged state, preventing use-after-consume.
-
-## Example 1: safe consume
+## 1. Syntax
 
 ```ictl
+if (<condition>) <statement_block> [else <statement_block>] [reconcile (<resolution_rules>)]
+```
+
+**Conditionals:**
+- Values are truthy if they are non-zero integers or non-empty strings.
+- Expressions are evaluated in the branch's current context.
+
+---
+
+## 2. Semantics
+
+### Runtime Execution
+- Only one path is executed at runtime based on the boolean result of the condition.
+- The `local_clock` is advanced by the cost of the executed path plus a 1ms overhead for the branch itself.
+- If the target clock is less than the calculated maximum cost across all possible paths, the VM performs **deterministic padding**.
+
+### Static Analysis
+- The static analyzer evaluates both the `if` and `else` blocks simultaneously to ensure entropic consistency.
+- Any value consumed in one path but not the other results in a `CrossPathConsume` error unless a `reconcile` rule is provided.
+
+---
+
+## 3. State Reconciliation (`reconcile`)
+
+When a variable is modified or consumed asynchronously across different branches of the same `if` statement, reconciliation rules determine the final state of that variable in the parent's arena.
+
+| Strategy             | Description                                                                                   |
+| :------------------- | :-------------------------------------------------------------------------------------------- |
+| **`first_wins`**     | Uses the value from the branch that executed if available, otherwise falls back to the other. |
+| **`priority(if)`**   | Always prefers the value produced in the `then` branch if a conflict occurs.                  |
+| **`priority(else)`** | Always prefers the value produced in the `else` branch.                                       |
+| **`decay`**          | Marks the variable as `Consumed` or `Decayed` regardless of the executed path.                |
+
+---
+
+## 4. Examples
+
+### Basic Reconcile
+```ictl
 @0ms: {
-  let x = "foo"
-  if (1 == 1) {
+  let x = "source"
+  if (flag == 1) {
     let y = x
+    // x is now consumed in this path
   } else {
-    let z = "bar"
+    let z = "static"
+    // x is still valid in this path
   } reconcile (x=first_wins)
 }
 ```
 
-- Here `x` is owned by the `if` block path and protected by first-wins.
-
-## Example 2: conflict detection
-
+### Resolving Variable Conflicts
 ```ictl
 @0ms: {
-  let x = "foo"
-  if (0 == 1) {
-    let x = "a"
+  if (mode == "fast") {
+    let timeout = 10ms
   } else {
-    let x = "b"
-  } reconcile (x=priority(else))
+    let timeout = 100ms
+  } reconcile (timeout=priority(if))
 }
 ```
-
-- `x` in final context resolves to `"b"` via explicit branch priority.
+In this example, `timeout` will be 10ms if `mode == "fast"`, otherwise 100ms.

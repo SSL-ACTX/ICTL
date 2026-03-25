@@ -1,79 +1,65 @@
-# Speculative Branches (`speculate` / `fallback` / `collapse`)
+# Speculative Branches
 
-This page documents the speculative control-flow construct in ICTL.
+This document formalizes the syntax and semantics of the `speculate`, `fallback`, and `collapse` constructs in ICTL.
 
-## 1. Motivation
+---
 
-- Traditional `if` is static speculation with reconcile rules.
-- `speculate` allows transient trials with rollback and commit semantics, supporting zero-entropic leakage on failed paths.
+## 1. Core Principles
+
+The `speculate` construct implements a transient micro-timeline for trial computations with zero-impact rollback.
+
+### Design Goals
+- **Zero Leakage**: No side effects or entropic modifications reach the parent timeline unless a successful `commit` is executed.
+- **Rollback Transparency**: The VM can "undo" all arena changes made within a speculative block in O(1) time.
+- **Temporal Accountability**: The speculatively executed code costs a deterministic amount of time, regardless of whether it was committed or rolled back.
+
+---
 
 ## 2. Syntax
 
 ```ictl
-@0ms: {
-  speculation_mode(selective)
-  let payload = "input"
-  speculate (max 50ms) {
-    let temp = payload
-    let out = temp
-
-    if (out == "bad") {
-      collapse
-    }
-
-    commit {
-      let final = out
-    }
-  } fallback {
-    let final = "default"
-  }
-}
-
-@60ms: {
-  speculation_mode(full)
-  let payload = "input"
-  speculate (max 50ms) {
-    let temp = payload
-    let out = temp
-
-    commit {
-      let final = out
-    }
-  } fallback {
-    let final = "default"
-  }
-}
+speculate (max <amount>ms) {
+    <statements>
+    commit { <statements> }
+} [fallback { <statements> }]
 ```
 
-- `speculation_mode(selective|full)`: sets the speculative commit mode for subsequent `speculate` blocks (default `selective`).
-- `speculate (max Nm)`: creates a micro-timeline.
-- `collapse`: abort speculative body and trigger fallback.
-- `commit { ... }`: makes successful speculation visible to parent.
-- `fallback { ... }`: executes only when speculation aborts/timeouts.
+### Components
+- **`max <amount>ms`**: The temporal budget. Overrunning this time limit triggers a timeout (equivalent to `collapse`).
+- **`commit { ... }`**: Marks a successful trial. All statements within this block modify the final committed state.
+- **`collapse`**: Immediately aborts the current speculative block and triggers the `fallback`.
+- **`fallback { ... }`**: Statements executed only when a speculation fails due to `collapse` or a timeout.
 
-## 3. Semantic rules
+---
 
-- Micro timeline starts with parent arena snapshot.
-- `local_clock` inside speculation is limited by `max`.
-- On success, parent state may integrate speculative state based on commit mode:
-  - `Selective` (default): only vars declared inside `commit` are merged.
-  - `Full`: all speculative arena contents are merged.
-- On failure, parent is restored exactly (stateless rollback), then fallback runs.
-- `watchdog` handles timeout, where `max` overrun is treated as `collapse`.
+## 3. Commit Modes
 
-## 4. VM configuration
+The `speculation_mode` statement determines how a successful `commit` merges with the parent's arena.
 
-In Rust VM API:
+| Mode            | Behavior                                                                                                                                              |
+| :-------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`selective`** | **Default**. Only variables explicitly assigned or modified within the `commit { ... }` block are merged back into the parent.                        |
+| **`full`**      | The entire micro-timeline arena (including variables modified outside the `commit` but still within the `speculate` block) is merged into the parent. |
 
-```rust
-vm.set_speculative_commit_mode(ictl::runtime::vm::SpeculationCommitMode::Selective);
-vm.set_speculative_commit_mode(ictl::runtime::vm::SpeculationCommitMode::Full);
+### Syntax
+```ictl
+speculation_mode(selective | full)
 ```
 
-## 5. Testing patterns
+---
 
-- Use integration tests in `tests/integration.rs`.
-- Validate both `Full` and `Selective` modes.
-- Ensure:
-  - rollback preserves parent values on collapse.
-  - time padding is exact (`max + fallback` semantics).
+## 4. Operational Cost and Padding
+
+The total temporal cost of a `speculate` block is fixed to ensure deterministic behavior.
+
+**Cost Formula:**
+```
+total_cost = 1ms (overhead) + max_ms + fallback_wcet
+```
+The VM always pads the `local_clock` to this total cost, ensuring that whether a speculation succeeds or fails, the resulting parent clock remains identical.
+
+---
+
+## 5. Causal Anchors
+
+Successful `commit` calls establish a **commit horizon**. Anchors established before a `commit` cannot be reached via `rewind_to`, as the entropic states of the variables have been fundamentally altered by the commit process.

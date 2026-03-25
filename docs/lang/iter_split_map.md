@@ -1,89 +1,62 @@
-# ICTL Paced iteration + split_map
+# Paced Iteration and `split_map`
 
-This page details the iterative constructs in ICTL and their entropic, temporal semantics.
-
-## `for` loop
-
-### Syntax
-
-```ictl
-for x consume arr pacing 10ms (max 40ms) {
-  let y = x
-  // body cost <= 10ms
-}
-```
-
-or
-
-```ictl
-for x clone arr pacing 5ms {
-  let y = clone(x)
-}
-```
-
-### Semantics
-
-- Source consumption:
-  - `consume`: `arr` is consumed at loop entry; object becomes consumed and cannot be used again.
-  - `clone`: `arr` remains valid; each element is copied at clone-time cost.
-- Source types:
-  - `Array`: each item is consumption/clone depending on mode.
-  - `Struct`: fields are iterated as `item` values with key/value structure (`item.key` and `item.value`).
-- Iteration pacing:
-  - The body runtime cost is measured in `local_clock` increments.
-  - If body cost > `pacing`, runtime returns `PacingViolation`.
-  - Pad with `pacing - body_cost` to make each iteration exact timing.
-- Loop budget `max`:
-  - Indicates maximum total allowed time for the loop. Once loop ends, runtime pads up to `max`.
-  - Completing before max includes deterministic padding.
-
-### Example
-
-```ictl
-@0ms: {
-  let numbers = [1,2,3,4]
-  for n consume numbers pacing 10ms (max 40ms) {
-    // each iteration is equalized to 10ms
-    let doubled = n * 2
-  }
-}
-```
-
-- Execution: 4 iterations × 10ms = 40ms exactly. `numbers` is consumed and unavailable afterward.
+This document specifies the iterative constructs in ICTL and their deterministic temporal and entropic semantics.
 
 ---
 
-## `split_map`
+## 1. Paced `for` loop
+
+The `for` loop in ICTL is designed for sequential iteration with fixed-time execution for each item.
 
 ### Syntax
-
 ```ictl
-@0ms: {
-  let data = [1, 2, 3]
-  split_map item consume data {
-    // each branch has item bound to element
-    yield item * 10
-  } reconcile (result=first_wins)
+for <item> <mode> <source> [pacing <amount>ms] [(max <amount>ms)] {
+  <statements>
 }
 ```
 
-### Semantics
+**Modes:**
+- **`consume`**: The `<source>` collection is destructively read from the arena. Each `<item>` is moved into the loop scope.
+- **`clone`**: The `<source>` remains intact. Each `<item>` is a deep copy of the original element (at temporal cost).
 
-- `split_map` consumes `data` by default.
-- The runtime spawns one child timeline per element.
-- Each child:
-  - receives independent copy of parent state (branch snapshot)
-  - executes body statements in isolation
-  - may emit `yield <value>` into child-local buffer `yielded`
-- After each child completes, the root timeline collects yielded values into `splitmap_results`.
+**Pacing (`pacing <N>ms`):**
+- Ensures each iteration of the loop body takes exactly `Nms`.
+- If the body executes in less than `Nms`, the `local_clock` is **padded**.
+- If the body exceeds `Nms`, a `WatchingBite` is triggered.
+
+**Budget (`max <N>ms`):**
+- Defines the total time boundary for the entire loop's execution. If the loop completes before the `max` budget, the remaining time is added to the `local_clock`.
+
+---
+
+## 2. Scatter-Gather Parallelism (`split_map`)
+
+The `split_map` construct implements a deterministic parallel mapping pattern.
+
+### Syntax
+```ictl
+split_map <item> <mode> <source> {
+  <statements>
+  [yield <expression>]
+} [reconcile (<resolution_rules>)]
+```
+
+**Semantics:**
+1. **Parallel Spawning**: One child timeline is spawned for each element in the `<source>` collection.
+2. **Snapshot Execution**: Each child starts with a snapshot of the parent state.
+3. **Isolation**: Child timelines execute the body independently.
+4. **Data Aggregation**: Values emitted via `yield` in each child are collected into a hidden `splitmap_results` array back in the parent timeline.
 
 ### Reconcile
+Conflicts resulting from multiple children modifying the same shared variables (cloned from the parent) are resolved via `reconcile` rules.
 
-- `reconcile` defines conflict and merge resolution for shared names.
-- `first_wins` gives precedence to the first branch that defines a conflict.
-- Future semantics can implement additional resolve strategies.
+---
 
-### Result
+## 3. Comparison of Iterative Constructs
 
-- After the loop, parent environment has a new variable `splitmap_results` (array)
-- Combined output for the example above: `[10,20,30]`.
+| Construct       | Execution Model | Memory Impact           | Best For                                            |
+| :-------------- | :-------------- | :---------------------- | :-------------------------------------------------- |
+| **`for`**       | Sequential      | Consumes or Clones      | Sequential data processing.                         |
+| **`split_map`** | Parallel        | Isolated clones         | Compute-intensive parallel map/reduce.              |
+| **`loop`**      | Repeated        | Standard entropic rules | Fixed-time repeated tasks (like system monitoring). |
+| **`loop tick`** | Isochronous     | Phase-committed         | Real-time control loops and pipelines.              |

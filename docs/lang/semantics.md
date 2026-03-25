@@ -1,67 +1,59 @@
-# ICTL Semantics
+# ICTL Core Semantics
 
-## Entropic Memory
+This document defines the fundamental semantic rules of the Isolate Concurrent Temporal Language (ICTL).
 
-ICTL tracks value state explicitly:
+---
 
-- `let x = y` moves from `y` (if `y` is already owned) unless using `clone`.
-- `consume` is destructive: `branch.arena.consume(name)` in VM removes value and marks it consumed.
-- `clone` in analysis maps to clone cost and unique copy semantics.
-- `set_consumed` is used for reconciliation on paranetic operations.
-- field access (e.g., `a.b`) causes structural decay in parent, meaning parent is now partially consumed (decayed). Direct parent reuse may be rejected.
-- `inspect(target) { ... }` and `debug(x)` / `log(x)` are non-consuming observables (read-only). They do not change `target` state or field decay.
-- `print(x)` is consuming, following normal entropic evaluation semantics.
+## 1. Entropic Memory Model
 
-### Promises (`defer` / `await`)
+The "Entropic" memory model is the cornerstone of ICTL. It treats values not as static data, but as energy states that evolve, move, and decay through computation.
 
-- `defer cap(...) deadline Nms` creates `EntropicState::Pending` with `ready_at` and `deadline_at` in the current branch.
-- `await(x)` advances branch `local_clock` to `ready_at` when pending and updates entropic state:
-  - resolves to `Valid(payload)` if within deadline
-  - sets `Consumed` if past deadline
-- `match entropy(x)` supports `Pending(...)`, `Valid(...)`, `Decayed(...)`, `Consumed` to branch on promise state.
+### Value States
+- **Valid**: The value is owned by the current branch and fully accessible.
+- **Pending**: The value is a promise (e.g., from `defer`) that will resolve at a future `local_clock`.
+- **Decayed**: The value (typically a struct) has had one or more of its fields consumed. The parent structure is no longer "sealed" and cannot be moved or sent as a whole.
+- **Consumed**: The value has been destructively read (e.g., via `let x = y` or `chan_send`) and is no longer available in the arena.
 
-## Timeline and time model
+### Rules of Consumption
+1. **Move by Default**: Assignments (`let a = b`) move the ownership of `b` to `a`. `b` becomes `Consumed`.
+2. **Structural Decay**: Accessing a field `s.f` consumes `f` and transitions `s` to a `Decayed` state.
+3. **Explicit Cloning**: To reuse a value without consuming it, `clone(x)` must be used, which incurs a deterministic temporal cost.
 
-- Each timeline (`Timeline`) has:
-  - `local_clock` (ms time visited)
-  - `cpu_budget_ms` (available CPU ticks)
-  - `slice_ms` (fixed tick slice for `loop tick`)
-  - `arena` (entropic values states)
-- `slice` in an isolate sets `slice_ms` and enables `loop tick` usage.
-- `loop tick` runs a body that must obey `slice_ms` cost; runtime pads to slice budget and commits double-buffered channel sends.
-- `split` creates child timelines by cloning parent state.
-- `merge` recombines child semantics into target based on explicit resolutions.
-- `if` / `else` performs speculative path evaluation and then merges final state.
+---
 
-## Temporal Flow
+## 2. Temporal Determinism
 
-- Each statement increments local clock by default (1ms), except:
-  - `network_request` costs 5ms
-  - `split`, `merge`, `watchdog`, `if` extra internal costs
-- `for` and `split_map` enforce pacing budgets and max bounds.
+ICTL enforces strict, predictable execution time for all operations.
 
-## Watchdogs and anchors
+### Local Clock and Budget
+- Every branch maintains a `local_clock` (measured in milliseconds).
+- Every instruction has a deterministic cost (base cost: 1ms).
+- Branches are initialized with a `cpu_budget_ms`. Exceeding this budget triggers a runtime `BudgetExhausted` fault.
 
-- `anchor` saves a backup of `local_clock` and `arena`.
-- `rewind_to` resets timeline to anchor state (with chaos guard).
-- `watchdog` monitors and executes recovery block on timeout then returns error `WatchdogBite`.
+### Pacing and Padding
+- Constructs like `for` loops and `routine` calls enforce timing contracts.
+- **Padding**: If a block of code completes faster than its contracted time (e.g., `taking 20ms`), the VM automatically pads the `local_clock` to match the contract, ensuring execution time is never source-dependent.
+- **Watchdogs**: If a block exceeds its allocated time, a `WatchdogBite` is triggered, allowing recovery logic to intervene.
 
-## Speculation (`speculate` / `fallback` / `collapse`)
+---
 
-- `speculate (max Nms) { ... } fallback { ... }` creates a temporary micro-timeline.
-- `speculation_mode(selective|full)` sets how successful speculative commits are merged (selective default).
-- Speculative body runs isolated using cloned arena and local_clock.
-- `commit` inside speculative body marks success; `collapse` or exceeded max causes failure and fallback.
-- On success, the parent branch can merge full child state or selective commit fields depending on runtime mode (`SpeculationCommitMode`).
-- `select (max Nms) { ... }` performs bounded channel race with deterministic padding and optional `timeout` path.
-- `match entropy(x) { ... }` routes based on value state (`Valid` / `Decayed` / `Consumed`).
-- VM time is padded to `max Nms + fallback_wcet` for deterministic cost.
+## 3. Timeline Isolation
 
-## Notes for implementers
+Concurrency in ICTL is modeled as isolated **Timelines** (branches).
 
-- Analyzer static rules in `src/analysis/analyzer.rs` check cross-branch consumptive consistency.
-- Runtime rules (described in `src/runtime/vm.rs`) create action-level faults for pacing, consumption, and branch resolution.
-- Use tests in `tests/integration.rs` as pattern:
-  - `integration_if_requires_reconcile_for_crosspath_consume`
-  - `integration_for_loop_pacing_and_bounds`
-  - `integration_split_map_collects_yields`
+### Split and Merge
+- **`split`**: Creates children that start with a snapshot of the parent's arena and clock.
+- **`merge`**: Recombines children into a parent. Conflicts (two branches modifying/consuming the same global state) must be resolved via explicit `reconcile` or `resolving` rules.
+
+### Speculative Execution
+- `if` and `speculate` blocks are evaluated speculatively.
+- ICTL analysis ensures that even if a branch is never "taken" at runtime, its entropic requirements are checked for consistency across all possible paths.
+
+---
+
+## 4. Isochronous Scheduling
+
+For high-precision timing, ICTL supports **Isochronous Matrix** scheduling.
+
+- **Slices**: Using `slice Nms` sets a fixed tick rate.
+- **Phase Commits**: `loop tick` blocks ensure that all channel operations happen in deterministic phases—sends are buffered until the tick boundary, and receives read from the previous tick's buffer.

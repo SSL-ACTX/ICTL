@@ -1,78 +1,66 @@
-# ICTL Promises (defer/await)
+# Promises and Deferred Effects
 
-ICTL promises are a controlled asynchronous operation model built on top of entropic memory. They are designed for deterministic time semantics with explicit failure/timeout behavior.
+This document details the `defer` and `await` constructs in ICTL, which provide a deterministic model for asynchronous-style operations.
 
-## `defer` expression
+---
 
-Syntax:
+## 1. Deferred Expressions (`defer`)
 
+The `defer` keyword initializes an asynchronous-style effect that will resolve at a future point in the timeline.
+
+### Syntax
 ```ictl
-let x = defer System.NetworkFetch(url="api.data", latency="10") deadline 50ms
+let <identifier> = defer <capability>(<params>) deadline <amount>ms
 ```
 
-- `defer <capability>(...) deadline <N>ms` creates a `Pending` value in the local timeline arena.
-- The expression stores a promise object; no payload is immediately available.
-- `latency` and `deadline` are user-supplied parameters; actual wallclock behavior is simulated by the VM (`ready_at` based on current clock + latency).
+**Semantics:**
+- **`Pending` State**: The target variable enters the `Pending` state in the current branch's arena.
+- **Clock Independence**: Initializing a `defer` expression does not advance the `local_clock`.
+- **Latency and Deadline**: Each promise is assigned a `ready_at` and `deadline_at` timestamp relative to the current `local_clock`.
 
-### Semantics
+---
 
-1. On assignment, the target local variable enters `EntropicState::Pending`.
-2. As with regular `let`, the variable is bound for later use.
-3. `defer` cannot be used in a context that expects immediate `Valid` data without `await`.
+## 2. Promise Resolution (`await`)
 
-## `await` statement
+The `await` statement is used to force the resolution of a `Pending` value.
 
-Syntax:
-
+### Syntax
 ```ictl
-await(x)
+await(<identifier>)
 ```
 
-- `await` forces evaluation of a pending promise.
-- If current local clock < `ready_at`, the branch advances clock to `ready_at` and consumes budget accordingly.
-- If now <= `deadline_at`, promise resolves to `Valid(payload)`.
-- If currently > `deadline_at`, promise transitions to `Consumed`.
+**Behavior:**
+1. **Clock Advance**: If the current `local_clock` is less than the promise's `ready_at` time, the `local_clock` is advanced to `ready_at`. This consumes the branch's CPU budget.
+2. **Resolution Check**:
+   - If the new `local_clock` is less than or equal to the `deadline_at`, the value resolves to `Valid` with the capability's payload.
+   - If the `local_clock` has already passed the `deadline_at`, the value transitions directly to `Consumed` (failure).
+3. **No-op**: If the variable is already `Valid`, `Decayed`, or `Consumed`, `await` has no effect.
 
-### Behavior
+---
 
-- `await` on `Valid` is no-op.
-- `await` on `Decayed` or `Consumed` is currently no-op (interpreted as an already finalized state).
-- `await` must be used before consuming a pending variable via expressions like `print`, field access, or `match entropy` that dereference it.
+## 3. Branching on State (`match entropy`)
 
-## `match entropy` with promises
+Use `match entropy` to safely handle the different states of a promise.
 
-Promises introduce a new branch pattern:
-
+### Example
 ```ictl
-match entropy(x) {
-  Pending(p): { ... }
-  Valid(v): { ... }
-  Decayed(d): { ... }
-  Consumed: { ... }
+match entropy(ds) {
+  Pending(p):
+    // Promise is still unresolved
+    let status = "waiting"
+  Valid(v):
+    // Promise resolved successfully; 'v' is the payload
+    let status = v
+  Consumed:
+    // Promise timed out or was already consumed
+    let status = "timeout"
 }
 ```
 
-- `Pending(p)` is taken when value is still unresolved.
-- `Valid(v)` executes when promise fulfilled.
-- `Consumed` handles expired or consumed promise values.
+---
 
-## Example
+## 4. Deterministic Simulation
 
-```ictl
-@0ms: {
-  let ds = defer System.NetworkFetch(url="api.slow", latency="100") deadline 20ms
-  await(ds)
-  match entropy(ds) {
-    Pending(p): { let status = "pending" }
-    Valid(v): { let status = v }
-    Consumed: { let status = "timeout" }
-  }
-}
-```
-
-## Analyzer and VM notes
-
-- Analyzer treats `defer` as an `Expression::Deferred` that is valid in any branch guardable by timeline consumption rules.
-- `await` adds deterministic local clock advance (
-  `max(current, ready_at)` plus budget) in VM and resolves/consumes pending state.
-- `match entropy` now handles `Pending` branch specifically for unresolved deferrals.
+In ICTL's research runtime, external effects (like network requests) are simulated deterministically:
+- `ready_at` is calculated based on a provided or default `latency` parameter.
+- The outcome is strictly bound to the `local_clock` and `deadline` contract, ensuring the program's behavior remains identical across all execution runs.

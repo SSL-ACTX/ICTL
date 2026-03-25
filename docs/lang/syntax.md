@@ -1,18 +1,27 @@
 # ICTL Syntax Reference
 
-This reference is written as a simple, approachable guide for both newcomers and contributors.
-The docs link each language construct to the semantics implemented in runtime and analyzer.
+This document provides a formal specification of the Isolate Concurrent Temporal Language (ICTL) syntax. ICTL is a research-focused language designed for deterministic, time-aware concurrency with entropic memory semantics.
 
-## 1. Timeline blocks
+---
 
-A timeline block defines an execution context at a time coordinate.
+## 1. Program Structure
 
-- `@0ms: { ... }` run in main timeline at global time 0.
-- `@+10ms: { ... }` relative time offset from the current timeline entry.
-- `@branchName: { ... }` timeline-specific branch code (`split` creates branches).
+An ICTL program consists of one or more **Timeline Blocks**.
 
-### Example
+### Timeline Blocks
+A timeline block defines an execution context at a specific time coordinate.
 
+**Syntax:**
+```ictl
+@<time_coordinate>: <statement_block>
+```
+
+**Time Coordinates:**
+- **Absolute Time**: `@0ms:`, `@100ms:` (Time relative to the root timeline start).
+- **Relative Time**: `@+10ms:` (Time offset relative to the current timeline entry).
+- **Branch Identifier**: `@branch_name:` (Executes within a specific named branch).
+
+**Example:**
 ```ictl
 @0ms: {
   split main into [worker]
@@ -22,274 +31,155 @@ A timeline block defines an execution context at a time coordinate.
 }
 ```
 
-## 2. Declarations and expressions
+---
 
-### Variable bind
+## 2. Declarations and Expressions
 
-- `let name = expression`
+### Variable Assignment (`let`)
+Initializes a new binding in the current branch's entropic arena.
 
-### Expression types
-
-- String literal: `"hello"`
-- Integer literal: `42` or `-5`
-- Array literal: `[1,2,3]`, `["a","b"]`
-- Struct literal: `struct { a = 1, b = "x" }`
-- Field access: `s.a`, with entropic field signals.
-- Clone operation: `clone(x)` (entropic clone, costs budget).
-- Channel receive: `chan_recv(chan)`.
-- Deferred promise: `defer System.NetworkFetch(url="...", latency="...") deadline Nms`
-
-### `defer` / `await` example
-
+**Syntax:**
 ```ictl
-@0ms: {
-  let ds = defer System.NetworkFetch(url="api.data", latency="10") deadline 50ms
-  await(ds)
-  print(ds)
+let <identifier> = <expression>
+```
+
+**Entropic Impact:**
+- If `<expression>` is a variable, it is **consumed** (moved) from its source and becomes unavailable unless wrapped in `clone()`.
+- If `<expression>` is a literal, it is allocated in the local arena.
+
+### Expression Types
+- **Literals**:
+  - String: `"hello"`
+  - Integer: `42`, `-5`
+  - Array: `[1, 2, 3]`
+  - Struct: `struct { a = 1, b = "x" }`
+- **Field Access**: `s.a` (Triggers **structural decay** in the parent struct `s`).
+- **Clone Operation**: `clone(x)` (Creates a deep copy of `x`; consumes CPU budget based on payload weight).
+- **Channel Receive**: `chan_recv(chan)` (Destructively reads a value from a channel).
+- **Deferred Promise**: `defer <capability>(<params>) deadline <amount>ms` (Creates a `Pending` state value).
+
+---
+
+## 3. Control Flow
+
+### Conditional Execution (`if`)
+Performs speculative path evaluation followed by deterministic state reconciliation.
+
+**Syntax:**
+```ictl
+if (<expression>) <statement_block> [else <statement_block>] [reconcile (<resolution_rules>)]
+```
+
+**Semantics:**
+- Both branches are speculatively analyzed for entropic consistency.
+- `reconcile` rules define how variables consumed in only one path are resolved.
+
+### Speculation (`speculate`)
+Creates a transient micro-timeline for trial computations with zero-leakage rollback.
+
+**Syntax:**
+```ictl
+speculate (max <amount>ms) {
+    <statements>
+    commit { <statements> }
+} [fallback { <statements> }]
+```
+
+**Semantics:**
+- **Rollback**: On failure (`collapse` or timeout), the state is restored exactly to pre-speculation.
+- **Commit**: On success, explicitly tagged variables (Selective mode) or the full state (Full mode) merge into the parent.
+
+### Paced Iteration (`for`)
+Iterates over collections with strict temporal and entropic constraints.
+
+**Syntax:**
+```ictl
+for <item> <mode> <source> [pacing <amount>ms] [(max <amount>ms)] { <statements> }
+```
+
+**Modes:**
+- `consume`: Source is destroyed; items are moved into the loop scope.
+- `clone`: Source remains valid; items are cloned into the loop scope.
+
+**Pacing:**
+- Ensures each iteration takes exactly `Nms`. Overruns trigger a `WatchdogBite`.
+
+### Parallel Mapping (`split_map`)
+A scatter-gather construct spawning independent timelines for each element in a collection.
+
+**Syntax:**
+```ictl
+split_map <item> <mode> <source> { <statements> } reconcile (<resolution_rules>)
+```
+
+---
+
+## 4. Routines and Contracts
+
+### Routine Definition (`routine`)
+Defines a temporal procedure with a deterministic execution contract.
+
+**Syntax:**
+```ictl
+routine <name>(<params>) taking (<amount>ms | _) { <statements> }
+```
+
+**Parameter Modes:**
+- `consume`: Argument is moved into the routine.
+- `clone`: Argument is copied.
+- `peek`: Read-only access; caller state unchanged.
+- `decay`: Caller value becomes `Decayed` after the call.
+
+---
+
+## 5. Timeline Management
+
+### Branching (`split` / `merge`)
+- **`split <parent> into [<branches>]`**: Spawns isolated child timelines.
+- **`merge [<branches>] into <target> [resolving (<rules>)]`**: Recombines branch states.
+
+### Resets and Anchors
+- **`anchor <name>`**: Snapshots the current timeline state (clock and arena).
+- **`rewind_to(<name>)`**: Restores the timeline to the specified anchor.
+- **`watchdog <target> timeout <amount>ms [recovery <block>]`**: Monitors a branch and executes recovery logic on timeout.
+
+---
+
+## 6. Channels and Concurrency
+
+### Communication
+- **`open_chan <name>(<capacity>)`**: Initializes a buffered communication channel.
+- **`chan_send <chan>(<value>)`**: Moves `<value>` into the channel buffer.
+- **`chan_recv(<chan>)`**: Extracts a value from the channel.
+
+### Isochronous Slicing
+- **`slice <amount>ms`**: Sets a fixed-time execution slice for the current isolate.
+- **`loop tick { <statements> }`**: Executes logic within a single slice, padding remaining time and committing channel buffers.
+
+---
+
+## 7. Diagnostics and Capabilities
+
+### Observables
+- **`print(<expression>)`**: Consuming output (standard entropic evaluation).
+- **`debug(<expression>)`** / **`log(<expression>)`**: Non-consuming peek for inspection.
+
+### Capability Manifests (`isolate`)
+Sandboxes a block of code with specific resource requirements and capabilities.
+
+**Syntax:**
+```ictl
+isolate [<identifier>] {
+    [enable <resource>(<amount>)]
+    [require <capability>(<params>)]
+    [slice <amount>ms]
+    <statements>
 }
 ```
 
-### Simple example
+---
 
-```ictl
-@0ms: {
-  let arr = [1,2,3]
-  let a = 5
-  let b = a + 1
-  let label = "ok"
-}
-```
-
-## 3. Control flow
-
-### `speculate` / `fallback` / `collapse`
-
-```ictl
-speculation_mode(selective)
-speculate (max 10ms) {
-  // speculative operations (move/consume,
-  // clones, channel ops, etc.)
-  let x = "hello"
-  commit {
-    let out = x
-  }
-} fallback {
-  let out = "default"
-}
-```
-
-- `speculation_mode(selective|full)` sets commit behavior for later speculative blocks (default `selective`).
-- `speculate` creates a micro-timeline and does not affect parent unless commit succeeds.
-- On `collapse` (or timeout) the speculative arena is discarded and fallback executes.
-- On commit success, one can run in either:
-  - `Selective` (default): only explicit commit values move up
-  - `Full`: entire speculative child state merges into parent (configured with VM option).
-
-### `slice` and `loop tick`
-
-```ictl
-@0ms: {
-  isolate fast {
-    slice 5ms
-    open_chan c(1)
-
-    loop tick {
-      let v = 42
-      chan_send c(v)
-      break
-    }
-
-    loop tick {
-      let x = chan_recv(c)
-      print(x)
-      break
-    }
-  }
-}
-```
-
-- `slice Nms` is an isolate-level timing contract.
-- `loop tick { ... }` executes inline for one tick and pads local_clock to full slice.
-- `chan_send` inside tick uses phase 0 pending buffer; `chan_recv` reads phase 1 committed data.
-
-### `select` / `timeout`
-
-```ictl
-@0ms: {
-  open_chan c(1)
-  let msg = "ping"
-  chan_send c(msg)
-
-  select (max 10ms) {
-    case data = chan_recv(c):
-      let out = data
-    timeout:
-      let out = "timeout"
-  } reconcile (out=first_wins)
-}
-```
-
-- `select (max Nm)` waits for the first ready `case`.
-- Each `case` is evaluated with channel receive semantics.
-- `timeout:` is executed if no case becomes ready before `max`.
-- `reconcile` merges branch outputs similarly to `if`.
-
-### `routine` with timing (including `taking _`)
-
-```ictl
-routine async_worker(peek input) taking _ {
-  let copy = clone(input)
-  let res = copy.value
-  yield res
-}
-
-@0ms: {
-  let req = struct { value = "ok" }
-  let response = call async_worker(req)
-}
-```
-
-- `taking Nms` sets an explicit time contract.
-- `taking _` lets analyzer infer the routine body cost.
-
-### `match entropy`
-
-```ictl
-@0ms: {
-  let user = struct { id = "1", name = "Alice" }
-
-  match entropy(user) {
-    Valid(u):
-      let result = u.id
-    Decayed(u):
-      let result = "decayed"
-    Consumed:
-      let result = "missing"
-  }
-}
-```
-
-- `match entropy(x)` branches based on `x` arena state: `Valid`, `Decayed`, `Consumed`.
-- `Valid` and `Decayed` branch arguments introduce a new local binding for the matched payload.
-- `Consumed` handles empty/consumed inputs.
-
-
-### `if` statement
-
-```ictl
-if (a == b) {
-  let result = "match"
-} else {
-  let result = "no"
-} reconcile (x=first_wins)
-```
-
-- if/else body paths are speculatively analyzed for entropic consistency.
-- `reconcile` rules are required when cross-path consumption affects persistency.
-
-### `loop`
-
-```ictl
-loop (max 100ms) {
-  let x = "step"
-  break
-}
-```
-
-- Recalculates local clock until max reached.
-- `break` exits; runtime puts padding to fill `max`.
-
-### `for` iteration (paced)
-
-```ictl
-for item consume arr pacing 10ms (max 40ms) {
-  let value = item
-}
-```
-
-- `consume`: array/struct is destructively read and each item is consumed.
-- `clone`: array/struct is left intact; each iter item is cloned on access.
-- `pacing`: each iteration takes exactly Nms (body + padding).
-- `max`: enforces total timeline budget when loop completes.
-- Struct source support: `for item consume my_struct { ... }` iterates fields as `{key, value}` items.
-
-### `inspect` and non-destructive read
-
-```ictl
-inspect(raw) {
-  let x = raw.a
-  let y = raw.b
-}
-```
-
-- `inspect(target) { ... }` executes body with non-destructive lookup semantics; it does not consume or decay `target`.
-- Useful for logging/observing without evolving entropic state.
-
-### `print`, `debug`, `log`
-
-```ictl
-print(x)
-debug(x)
-log(x)
-```
-
-- `print(...)` consumes value semantics (as any expression access does).
-- `debug(...)` and `log(...)` are non-consuming observables (peek-style), to avoid entropic side effects.
-
-### `routine` with inferred taking
-
-```ictl
-routine f(peek p) taking _ {
-  let q = p
-}
-```
-
-- `taking _` lets analyzer infer the routine CPU budget based on body cost.
-
-### merge / reconcile updates
-
-- `merge [a,b] into main resolving(x=first_wins)` exists for explicit merge resolution.
-- `select (max 10ms) { ... } reconcile auto` automatically resolves cross-branch outputs when safe.
-
-### `split_map`
-
-Parallel scatter-gather variant:
-
-```ictl
-@0ms: {
-  let data = [1,2,3]
-  split_map item consume data {
-    yield item
-  } reconcile (result=first_wins)
-}
-```
-
-- One child branch per element.
-- Each child may `yield` values.
-- Root collects values into `splitmap_results`.
-
-## 4. Timeline management
-
-- `split parent into [a,b]` creates branches `a`, `b`.
-- `merge [a,b] into main resolving(v=name)` merges branch values.
-- `anchor name` snapshots a branch.
-- `rewind_to(name)` returns branch to anchor state (chaos mode blocks).
-- `watchdog target timeout Nms recovery { ... }` monitors branches.
-
-## 5. Channels
-
-- `open_chan ch(10)` opens buffered channel.
-- `chan_send ch(x)` sends destructively.
-- `chan_recv(ch)` receives from channel.
-
-## 6. Operators and precedence
-
-- Arithmetic: `+`, `-`, `*`, `/`
-- Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
-- Including `for` pacing and loop values, these form the core runtime semantics.
-
-## 7. Developer tips
-
-- Run `cargo test -- --nocapture` for full integration checks after syntax changes.
-- Use `analyzer` to validate entropic path correctness before executing VM code.
-- Keep `if/else` `reconcile` rules explicit for deterministic merge semantics.
+## 8. Low-Level / System Statements
+- **`network_request <url>`**: Triggers a simulated network effect (cost: 5ms).
+- **`reset <branch> to <anchor>`**: Implementation-level acausal reset.
+- **`collapse`**: Immediately aborts the current speculative block.

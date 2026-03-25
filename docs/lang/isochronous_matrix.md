@@ -1,56 +1,66 @@
-# Isochronous Matrix (Slice + Tick) Semantics
+# Isochronous Matrix (Slice + Tick)
 
-This feature is an extension of the ICTL temporal model for high-performance deterministic loops.
+This document formalizes the isochronous scheduling model in ICTL, designed for high-precision, fixed-rate execution loops.
 
-## Goal
+---
 
-Enable fixed-slice scheduling inside an isolate and enforce per-tick worst-case timing at analysis time.
+## 1. Core Motivation
 
-## New constructs
+Standard ICTL execution is relative and asynchronous. The **Isochronous Matrix** model introduces fixed-time windows (slices) to enable synchronous data processing and deterministic pipeline stages.
 
-- `slice Nms`: defines a fixed tick window in a surrounding isolate manifest.
-- `loop tick { ... }`: executes once per tick, with local clock padding and channel-phase commit.
+---
 
-## Syntax
+## 2. Fixed-Slice Scheduling (`slice`)
 
+The `slice` statement defines a constant temporal window for all subsequent `loop tick` operations within an isolate.
+
+### Syntax
 ```ictl
-@0ms: {
-  isolate fast {
-    slice 5ms
-    open_chan c(8)
-
-    // tick N: produce
-    loop tick {
-      let v = 10
-      chan_send c(v)
-      break
-    }
-
-    // tick N+1: consume previous tick value
-    loop tick {
-      let x = chan_recv(c)
-      print(x)
-      break
-    }
-  }
+isolate [<identifier>] {
+    slice <amount>ms
+    <statements>
 }
 ```
 
-## Analyzer rules
+**Semantics:**
+- **Binding**: The `slice <amount>ms` declaration binds the isolate's `cpu_budget_ms` and `slice_ms` in the timeline state.
+- **Enforcement**: Any `loop tick` within this isolate must fit its execution within the specified `slice_ms`.
 
-- `slice` in a manifest binds `cpu_budget_ms` and `slice_ms` in timeline state.
-- `loop tick` without any active `slice` is invalid (raises `TickLoopWithoutSlice`).
-- `loop tick` static cost must not exceed `slice_ms` (`TickLoopBudgetExceeded`).
+---
 
-## Runtime behavior
+## 3. Tick Execution (`loop tick`)
 
-1. `loop tick` body executes until `break`, then any remaining `slice_ms` is padded by increasing local clock.
-2. Channel send inside tick writes to `pending_channels` (double-buffered path).
-3. At tick end, all `pending_channels` are appended into live `channels` (phase-handshake).
-4. `chan_recv` reads from `channels` current committed contents (previous tick payloads).
+The `loop tick` construct defines a single iteration of a fixed-time loop.
 
-## Why this is useful
+### Syntax
+```ictl
+loop tick {
+    <statements>
+    [break]
+}
+```
 
-- reduces per-statement micro clock bias, reduces runtime branch and clock arithmetic overhead.
-- supports deterministic bulk-synchronous pipeline: production and consumption are distinct phases.
-- allows the VM to accept a single static timing limit per tick.
+**Behavior:**
+1. **Body Execution**: The statements inside the `loop tick` are executed normally.
+2. **Padding**: After the body (or a `break`), the VM automatically advances the `local_clock` to the full `slice_ms` duration.
+3. **Phase-Commit**: Channel operations inside a tick follow a **double-buffered phase** model:
+   - **Sends**: `chan_send` writes to a `pending` buffer.
+   - **Boundary**: At the end of the tick, all `pending` buffers are committed to the live `channels`.
+   - **Receives**: `chan_recv` reads from the data committed in the **previous** tick.
+
+---
+
+## 4. Deterministic Pipelines
+
+The isochronous model enables reliable scatter-gather and pipeline architectures:
+- **Tick N**: Producer sends data to a channel.
+- **Tick N+1**: Consumer receives the data produced in Tick N.
+
+This separation of production and consumption phases eliminates race conditions and ensures that the timing of data processing is completely independent of the actual execution speed of the underlying hardware.
+
+---
+
+## 5. Constraint Rules
+
+1. **Active Slice Required**: `loop tick` can only be used within an `isolate` block that has an active `slice` declaration.
+2. **WCET Compliance**: The Worst-Case Execution Time (WCET) of the `loop tick` body must not exceed the `slice_ms`. Overruns result in a `WatchdogBite`.

@@ -1,66 +1,63 @@
-# Advanced Routing: `select` and `match entropy`
+# Advanced Routing constructs
 
-This page documents the advanced routing control flow constructs in ICTL.
+This document details the advanced control-flow constructs in ICTL, including `select` and `match entropy`.
 
-## 1. `select` (Temporal Multiplexing)
+---
 
-`select` is a deterministic channel race and timeout macro.
+## 1. Temporal Multiplexing (`select`)
+
+The `select` construct is used to race multiple channel operations and a timeout period.
 
 ### Syntax
-
 ```ictl
-@0ms: {
-  open_chan c(1)
-  let msg = "ping"
-  chan_send c(msg)
-
-  select (max 10ms) {
-    case data = chan_recv(c):
-      let out = data
+select (max <amount>ms) {
+    case <identifier> = chan_recv(<chan>):
+        <statements>
     timeout:
-      let out = "timeout"
-  } reconcile (out=first_wins)
-}
+        <statements>
+} [reconcile (<resolution_rules>)]
 ```
 
-### Rules
+### Semantics
+- **Bounded Wait**: `select` limits the execution time of its cases to `max <amount>ms`.
+- **Case Execution**: The first `case` whose channel has data is executed.
+- **Timeout**: If no channel has data before the timeout, the `timeout:` block is executed.
+- **Clock Uniformity**: The `local_clock` is advanced by `1ms + max(case_wcet, timeout_wcet)` with deterministic padding, ensuring the statement always costs the same regardless of which path was taken.
 
-- `select (max Nms)` creates a bounded waiting period.
-- `case <name> = chan_recv(<chan>)` only executes when the channel has data.
-- `timeout:` executes if no case is ready before `max`.
-- The final local branch is reconciled by `reconcile(...)`.
-- The total cost is fixed to `1 + max(case_wcet, timeout_wcet)` (including base overhead) with explicit padding.
+---
 
-## 3. `match entropy` (State-Based Routing)
+## 2. State-Based Routing (`match entropy`)
 
-`match entropy(x)` routes based on `x`’s entropic state (valid, decayed, consumed).
+Use `match entropy` to safely branch based on the current entropic state of a variable.
 
 ### Syntax
-
 ```ictl
-@0ms: {
-  let user = struct { id = "1", name = "Alice" }
-
-  match entropy(user) {
-    Valid(u):
-      let result = u.id
-    Decayed(u):
-      let result = "decayed"
+match entropy(<identifier>) {
+    Valid(<binding>):
+        <statements>
+    Pending(<binding>):
+        <statements>
+    Decayed(<binding>):
+        <statements>
     Consumed:
-      let result = "missing"
-  }
+        <statements>
 }
 ```
 
-### Rules
+### Branched States
+- **`Valid`**: The variable is intact and fully owned.
+- **`Pending`**: The variable is an unresolved promise (e.g., from `defer`).
+- **`Decayed`**: The variable is a struct with one or more consumed fields.
+- **`Consumed`**: The variable has been moved or destructively read.
 
-- `Valid(u)` runs when `user` is fully intact and may be moved.
-- `Decayed(u)` runs when fields were consumed but struct exists (partial seal).
-- `Consumed` runs when `user` is already consumed.
-- `Valid/Decayed` introduce local binding for payload usage.
-- No extra reconciliation required; the `match entropy` handler itself is deterministic.
+**Note**: In `Valid`, `Pending`, and `Decayed` branches, a new local binding is introduced for the matched variable's payload, allowing its use within the block.
 
-## 3. Examples
+---
 
-- `select` ensures deterministic runtime and supports prioritized channel selection.
-- `match entropy` provides safe decay-aware routing for entropic memory workflows.
+## 3. Comparison with Standard Flow
+
+| Construct           | Purpose            | Advantage                                 |
+| :------------------ | :----------------- | :---------------------------------------- |
+| **`if`**            | Boolean condition. | Explicit state reconciliation.            |
+| **`select`**        | Temporal race.     | Deterministic timing for channel IO.      |
+| **`match entropy`** | State inspection.  | Safe handling of consumed/decayed values. |

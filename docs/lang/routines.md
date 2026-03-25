@@ -1,70 +1,62 @@
 # Routine Temporal Contracts
 
-This page documents `routine` + `call` support in ICTL.
+This document formalizes the syntax and semantics of `routine` and `call` constructs in ICTL.
 
-## Syntax
+---
 
+## 1. Routine Definition (`routine`)
+
+A routine defines a reusable procedure with an explicit temporal and entropic contract.
+
+### Syntax
 ```ictl
-routine process_payment(consume auth_token, peek details) taking 25ms {
-  let amount = details.amount
-  yield amount
-}
-
-@0ms: {
-  let token = "secure123"
-  let tx = struct { amount = "100", currency = "USD" }
-  let result = call process_payment(token, tx)
+routine <name>(<param_mode> <identifier>, ...) taking (<amount>ms | _) {
+  <statements>
+  [yield <expression>]
 }
 ```
 
-## Parameter modes
+### Parameter Modes
+- **`consume`**: Default. The caller's value is **moved** and marks it `Consumed` in the caller.
+- **`clone`**: Caller keeps the original; routine gets a deep copy. Incurs deterministic cloning cost.
+- **`decay`**: Moves the value, but if it's a struct, it's marked as `Decayed` in the caller's arena.
+- **`peek`**: Read-only access for inspection; caller's arena state is unchanged.
 
-- `consume`: caller variable is moved and marked consumed in caller scope.
-- `clone`: caller keeps value intact; routine gets read-only copy semantics.
-- `decay`: caller value becomes `Decayed` after call.
-- `peek`: read-only; caller state unchanged.
+---
 
-## Timing rules
+## 2. Temporal Contracts (`taking`)
 
-- `routine ... taking Nms` is a worst-case execution contract.
-- `routine ... taking _` is an inferred contract: analyzer computes body cost and sets taking to that value.
+The `taking` clause defines the **Worst-Case Execution Time (WCET)** for the routine.
 
-### Examples
+- **Explicit Timing**: `taking 20ms`. The VM guarantees the routine call takes exactly 20ms. If it finishes early, it **pads** the local clock. If it overruns, it triggers a `WatchdogBite`.
+- **Inferred Timing**: `taking _`. The static analyzer calculates the maximum cost of all code paths and sets the contract automatically.
 
-Explicit timing:
+---
 
+## 3. Invocation (`call`)
+
+Routines are executed using the `call` keyword.
+
+### Syntax
 ```ictl
-routine f(consume x) taking 15ms {
-  let y = x
-  let z = clone(y)
-}
-
-@0ms: { let result = call f(a) }
+let <result> = call <name>(<arguments>)
 ```
 
-Inferred timing (`_`):
+**Semantics:**
+1. Arguments are evaluated and moved/cloned based on the routine's declaration.
+2. The caller's `local_clock` is advanced by the routine's `taking_ms` contract.
+3. The first `yield` value (if any) is returned to the caller.
 
-```ictl
-routine g(peek p) taking _ {
-  let q = p
-  let r = clone(q)
-}
+---
 
-@0ms: { let result = call g(v) }
-```
+## 4. Yield and Return
 
-Runtime semantics:
-  - if body costs < Nms, VM pads to Nms.
-  - if body costs > Nms, VM raises `WatchdogBite`.
-- Routine body cannot include `split`, `merge`, or explicit `@...` timeline blocks.
+- **`yield <expression>`**: Emits a value from the routine and concludes its execution for the current call.
+- **Void Routines**: If no `yield` is executed, the routine returns a `void` payload.
 
-## Nested contract check
+---
 
-Static analyzer validates each routine body using a recursive call cost model:
-- `call` expression cost is `callee taking_ms` plus argument expression cost.
-- Routine cost is estimated as body path maximum (if conditional) and must fit taking.
+## 5. Constraint Rules
 
-## Yield return values
-
-- `yield <expr>` inside routine collects one or more values in return path.
-- `call` returns first `yield` value, or `void` when nothing yielded.
+1. **Isolation**: Routines cannot contain `@...` timeline entries, `split`, `merge`, or `isolate` blocks.
+2. **Determinism**: Every path in a routine must satisfy the `taking` contract. Static analysis rejects routines where a path's cost exceeds the declared `taking_ms`.

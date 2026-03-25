@@ -20,4 +20,4 @@ This is the top-level language documentation landing page.
 
 Browse the docs in `docs/lang/` for detailed syntax, semantics, and examples.
 
-These docs are maintained to align with the runtime implementation in `src/runtime/vm.rs`, the analyzer rules in `src/analysis/analyzer.rs`, and parser/AST in `src/frontend`.
+These docs are maintained to align with the runtime implementation in `src/runtime/vm/`, the analyzer rules in `src/analysis/analyzer.rs`, and parser/AST in `src/frontend`.

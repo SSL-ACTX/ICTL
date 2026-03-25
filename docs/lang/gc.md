@@ -1,97 +1,57 @@
-# ICTL Runtime GC / EGC Behavior
+# Entropic Garbage Collection (EGC)
 
-This document describes the ICTL runtime garbage collection strategy, also known as Entropic Garbage Collection (EGC), and how the VM implements deterministic memory reclamation.
+This document describes the ICTL runtime strategy for deterministic memory reclamation, referred to as Entropic Garbage Collection (EGC).
 
-## Goals
+---
 
-- Preserve temporal determinism by avoiding non-deterministic runtime scanning (traditional GC).
-- Maintain memory safety with entropic state tracking (Valid / Decayed / Consumed).
-- Provide explicit, deterministic points for arena reclamation (branch end / commit horizon).
-- Provide developer-facing semantics for `anchor`, `commit`, `rewind`, `split`, `merge`, `speculate`, and `send`.
+## 1. Principles of EGC
 
-## Key concepts
+Traditional garbage collection often introduces non-deterministic "stop-the-world" pauses. EGC achieves memory safety and efficiency through the following principles:
 
-### Arena
+1. **Deterministic Timing**: Memory reclamation points are explicitly defined by language constructs and lifecycle events.
+2. **Entropic State Tracking**: The VM tracks whether a value is `Valid`, `Decayed`, or `Consumed`. Memory is freed the moment a value enters the `Consumed` state.
+3. **Branch-Local Arenas**: Each timeline has its own isolated arena. When a timeline terminates, its entire arena is reclaimed in a single O(1) operation.
 
-Each timeline has an `Arena` representing the branch-local memory store.
+---
 
-- `Arena.bindings: HashMap<String, EntropicState>`
-- `Arena.used`: bytes currently counted as allocated for `Valid` payloads
-- `Arena.capacity`: max allowed bytes
+## 2. Arena Management
 
-`EntropicState` values:
-- `Valid(payload)` - value is available and counted toward budget.
-- `Decayed(fields)` - struct has been partially consumed into fields.
-- `Consumed` - value was consumed and should not be read again.
+Each branch maintains an `Arena` with a fixed `capacity` and a tracking counter for `used` bytes.
 
-### EGC pillars
+| Metric         | Description                                                           |
+| :------------- | :-------------------------------------------------------------------- |
+| **`capacity`** | The maximum memory allowed for the branch (configured via `isolate`). |
+| **`used`**     | The current sum of weights of all `Valid` payloads in the arena.      |
 
-1. **Static dealloc on consume and update**
-   - `consume` immediately decrements memory weight from the arena.
-   - `set_consumed` and `decay` follow entropic type guarantees.
-   - `insert` overwrites and adjusts `Arena.used` by subtracting any prior valid value.
+### Weight Calculation
+Payload weights are calculated deterministically:
+- **Integer**: 8 bytes.
+- **String**: Length of the string in bytes.
+- **Struct**: Sum of field weights + 16 bytes overhead.
+- **Array**: Sum of element weights + 16 bytes overhead.
 
-2. **Branch lifecycle cleanup**
-   - `GarbageCollector::collect_branch` is invoked when a sub-timeline is terminated.
-   - Clears anchor snapshots and resets the arena (in O(1)).
+---
 
-3. **Commit horizon pruning**
-   - When a branch executes `commit`, all anchor snapshots are cleared.
-   - `commit_horizon_passed` is set on the timeline.
-   - Rewind past commit results in runtime error.
+## 3. Reclamation Lifecycle
 
-## Runtime semantics
+### Continuous Reclamation
+Memory is reclaimed immediately during:
+- **Consumption**: `let x = y` frees the memory previously used by `y` and reallocates it to `x`.
+- **Field Extraction**: Accessing `s.f` frees the weight of field `f` while keeping the rest of struct `s` (now `Decayed`).
+- **Reassignment**: Overwriting an existing variable (`let x = ...`) frees the weight of the previous value.
 
-### Anchor / Rewind
+### Lifecycle Events
+- **Branch Termination**: When a branch is merged or explicitly terminated, the VM invokes `GarbageCollector::collect_branch`, clearing all associated bindings and snapshots.
+- **Commit Horizon**: Executing `commit { ... }` marks a point of no return. The VM discards all `anchor` snapshots for that branch, freeing the memory used to store those historical states.
 
-- `anchor <name>` creates a snapshot object with branch-local arena clone and local clock.
-- `rewind_to(<name>)` moves timeline state back to anchor snapshot state unless commit horizon passed.
-- In Chaos entropy mode, rewind is prohibited.
+---
 
-### Commit
+## 4. Manual Consolidation
 
-- `commit { ... }` marks a stable checkpoint and discards anchor snapshots.
-- `commit_horizon_passed = true` after commit.
-- `GarbageCollector::collect_commit_anchors` clears all snapshots.
+The VM provides a `compact_consumed()` utility that can be manually or automatically triggered during `commit` or `merge` events. This removes `Consumed` markers from the arena's internal hash map, optimizing lookup performance for long-running timelines.
 
-### Split / Merge
+---
 
-- `split` clones parent arena into child branches; each branch has independent lifecycle.
-- `merge` reconciles variable states by rules;
-- children are collected after successful merge by `GarbageCollector::collect_branch`.
+## 5. Temporal Cost of GC
 
-### Speculation
-
-- `speculate` executes with local branch snapshots and optional fallback.
-- On success and commit semantics, selected commit variables propagate.
-- On collapse or failure, child state is discarded.
-- During speculation, anchors are ephemeral and can be cleared on commit.
-
-## Version pointers
-
-- This page reflects the P14 EGC proposal behavior from the repository state as of March 21, 2026.
-
-## Example flow
-
-```
-@0ms: {
-  split main into [worker]
-}
-@worker: {
-  anchor start
-  let x = "work"
-  commit {
-    let y = "done"
-  }
-  rewind_to(start)  # error: commit horizon reached
-}
-```
-
-- Anchor stored at `start`.
-- `commit` clears snapshots and marks horizon.
-- `rewind_to(start)` fails with `CommitHorizonViolation`.
-
-## Notes
-
-- Because `Arena::insert` now supports safe overwrite, reassignments are memory-consistent.
-- `compact_consumed()` is available as a manual consolidation utility for runtime paths where explicit GC-like cleanup is beneficial.
+Unlike traditional languages, GC in ICTL is not a separate "background" process. Memory operations (allocation and reclamation) are part of the statement execution cost. This ensures that memory management never introduces jitter or hidden costs into the `local_clock`.
