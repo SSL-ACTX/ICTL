@@ -19,6 +19,8 @@ pub enum TemporalError {
     CapabilityViolation(String),
     #[error("Missing capability handler for: {0}")]
     MissingCapability(String),
+    #[error("Type mismatch: {0}")]
+    TypeMismatch(String),
     #[error("Memory fault: {0}")]
     MemoryFault(#[from] MemoryError),
     #[error("Evaluation error: {0}")]

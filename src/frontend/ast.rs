@@ -270,6 +270,7 @@ pub enum Expression {
     ArrayLiteral(Vec<Expression>),
     ChannelReceive(String),
     Integer(i64),
+    Boolean(bool),
     BinaryOp {
         left: Box<Expression>,
         op: BinaryOperator,

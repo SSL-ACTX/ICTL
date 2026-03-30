@@ -40,6 +40,7 @@ pub enum EntropicState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Payload {
     Integer(i64),
+    Bool(bool),
     String(String),
     Struct(HashMap<String, EntropicState>),
     Topology(HashMap<String, EntropicState>),
@@ -51,6 +52,7 @@ impl std::fmt::Display for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Payload::Integer(i) => write!(f, "{}", i),
+            Payload::Bool(b) => write!(f, "{}", b),
             Payload::String(s) => write!(f, "{}", s),
             Payload::Struct(fields) => {
                 let mut pairs: Vec<String> = Vec::new();
@@ -144,6 +146,7 @@ impl Payload {
                 let total: u64 = elems.iter().map(|p| p.weight()).sum();
                 total + 16
             }
+            Payload::Bool(_) => 1,
             Payload::Null => 8,
         }
     }

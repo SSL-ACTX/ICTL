@@ -140,17 +140,21 @@ yield_stmt = { "yield" ~ identifier }
 
 expression = { relational_expr }
 relational_expr = {
-    additive_expr ~ (("==" | "!=" | "<=" | ">=" | "<" | ">") ~ additive_expr)*
+    additive_expr ~ (relop ~ additive_expr)*
 }
-additive_expr = { multiplicative_expr ~ (("+" | "-") ~ multiplicative_expr)* }
-multiplicative_expr = { unary_expr ~ (("*" | "/") ~ unary_expr)* }
+relop = { "==" | "!=" | "<=" | ">=" | "<" | ">" }
+additive_expr = { multiplicative_expr ~ (addop ~ multiplicative_expr)* }
+addop = { "+" | "-" }
+multiplicative_expr = { unary_expr ~ (mulop ~ unary_expr)* }
+mulop = { "*" | "/" }
 unary_expr = { "-" ~ unary_expr | primary_expr }
 primary_expr = { base_expr ~ (index_access | field_access_tail)* }
 field_access_tail = { "." ~ identifier }
 field_update_stmt = { primary_expr ~ "=" ~ expression }
 null = { "null" }
-base_expr = { defer_expr | call_expr | chan_recv_expr | struct_lit | topology_lit | array_lit | clone_op | integer_literal | identifier_expr | string_literal | null | "(" ~ expression ~ ")" }
+base_expr = { defer_expr | call_expr | chan_recv_expr | struct_lit | topology_lit | array_lit | clone_op | integer_literal | bool_literal | identifier_expr | string_literal | null | "(" ~ expression ~ ")" }
 index_access = { "[" ~ expression ~ "]" }
+bool_literal = { "true" | "false" }
 call_expr = { "call" ~ identifier ~ "(" ~ expression_list? ~ ")" }
 expression_list = { expression ~ ("," ~ expression)* }
 

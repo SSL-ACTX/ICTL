@@ -20,6 +20,10 @@ pub enum SemanticErrorKind {
     InvalidLoopBudget,
     #[error("Tick loop requires a fixed slice via slice <N>ms")]
     TickLoopWithoutSlice,
+    #[error("Type mismatch: {0}")]
+    TypeMismatch(String),
+    #[error("Undefined variable: {0}")]
+    UndefinedVariable(String),
     #[error("Tick loop body cost {0}ms exceeds slice budget {1}ms")]
     TickLoopBudgetExceeded(u64, u64),
     #[error("Tick loop must include a break statement")]
@@ -73,11 +77,24 @@ impl std::error::Error for SemanticError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueType {
+    Integer,
+    String,
+    Bool,
+    Null,
+    Struct,
+    Topology,
+    Array,
+    Unknown,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct BranchState {
     pub consumed: HashSet<String>,
     pub decayed: HashSet<String>,
     pub yields: HashSet<String>,
+    pub types: HashMap<String, ValueType>,
 }
 
 pub struct EntropicAnalyzer {
@@ -213,6 +230,17 @@ impl EntropicAnalyzer {
         Ok(())
     }
 
+    pub(crate) fn set_variable_type(&mut self, name: &str, vtype: ValueType) {
+        let state = self.branch_contexts.get_mut(&self.current_branch).unwrap();
+        state.types.insert(name.to_string(), vtype);
+    }
+
+    pub(crate) fn get_variable_type(&self, name: &str) -> Option<ValueType> {
+        self.branch_contexts
+            .get(&self.current_branch)
+            .and_then(|state| state.types.get(name).cloned())
+    }
+
     fn statement_snippet(&self, stmt: &SpannedStatement) -> String {
         match &stmt.stmt {
             Statement::Assignment { target, expr } => {
@@ -288,6 +316,7 @@ impl EntropicAnalyzer {
             Expression::Literal(v) => format!("\"{}\"", v),
             Expression::Identifier(v) => v.clone(),
             Expression::Null => "null".to_string(),
+            Expression::Boolean(b) => b.to_string(),
             Expression::FieldAccess { target, field } => {
                 format!("{}.{}", self.expr_snippet(target), field)
             }

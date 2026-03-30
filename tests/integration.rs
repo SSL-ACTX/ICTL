@@ -85,6 +85,40 @@ fn integration_if_statement_integer_arith() -> anyhow::Result<()> {
 }
 
 #[test]
+fn integration_type_system_assignment_mismatch() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let x = 1
+      let x = "oops"
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err());
+
+    Ok(())
+}
+
+#[test]
+fn integration_type_system_if_condition_must_be_bool() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let x = 1
+      if (x) {
+        let y = 2
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err());
+
+    Ok(())
+}
+
+#[test]
 fn integration_inspect_block_does_not_consume() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {
@@ -778,7 +812,10 @@ fn integration_isolate_print_requires_system_log() -> anyhow::Result<()> {
 
     let program = parser::parse_ictl(source)?;
     let mut analyzer = EntropicAnalyzer::new();
-    assert!(analyzer.analyze_program(&program).is_err(), "Print in isolate requires System.Log");
+    assert!(
+        analyzer.analyze_program(&program).is_err(),
+        "Print in isolate requires System.Log"
+    );
 
     Ok(())
 }
@@ -818,7 +855,8 @@ fn integration_isolate_print_with_system_log() -> anyhow::Result<()> {
 }
 
 #[test]
-fn integration_isolate_print_without_system_log_handler_fails() -> anyhow::Result<()> {
+fn integration_isolate_print_without_system_log_handler_fails() -> anyhow::Result<()>
+{
     let source = r#"
     @0ms: {
       isolate demo {

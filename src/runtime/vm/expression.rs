@@ -11,36 +11,53 @@ impl Vm {
         right_value: Payload,
         op: &BinaryOperator,
     ) -> Result<Payload, TemporalError> {
-        let l = match left_value {
-            Payload::Integer(i) => i,
-            Payload::String(ref s) => s.parse::<i64>().unwrap_or(0),
-            _ => 0,
-        };
-        let r = match right_value {
-            Payload::Integer(i) => i,
-            Payload::String(ref s) => s.parse::<i64>().unwrap_or(0),
-            _ => 0,
-        };
-
-        let result = match op {
-            BinaryOperator::Add => l + r,
-            BinaryOperator::Sub => l - r,
-            BinaryOperator::Mul => l * r,
-            BinaryOperator::Div => {
-                if r == 0 {
-                    return Err(TemporalError::EvalError("Division by zero".into()));
+        let result = match (left_value, right_value) {
+            (Payload::Integer(l), Payload::Integer(r)) => match op {
+                BinaryOperator::Add => Payload::Integer(l + r),
+                BinaryOperator::Sub => Payload::Integer(l - r),
+                BinaryOperator::Mul => Payload::Integer(l * r),
+                BinaryOperator::Div => {
+                    if r == 0 {
+                        return Err(TemporalError::EvalError(
+                            "Division by zero".into(),
+                        ));
+                    }
+                    Payload::Integer(l / r)
                 }
-                l / r
+                BinaryOperator::Eq => Payload::Bool(l == r),
+                BinaryOperator::Neq => Payload::Bool(l != r),
+                BinaryOperator::Lt => Payload::Bool(l < r),
+                BinaryOperator::Gt => Payload::Bool(l > r),
+                BinaryOperator::Le => Payload::Bool(l <= r),
+                BinaryOperator::Ge => Payload::Bool(l >= r),
+            },
+            (Payload::Bool(l), Payload::Bool(r)) => match op {
+                BinaryOperator::Eq => Payload::Bool(l == r),
+                BinaryOperator::Neq => Payload::Bool(l != r),
+                _ => {
+                    return Err(TemporalError::EvalError(
+                        "Invalid boolean operator".into(),
+                    ))
+                }
+            },
+            (Payload::String(l), Payload::String(r)) => match op {
+                BinaryOperator::Eq => Payload::Bool(l == r),
+                BinaryOperator::Neq => Payload::Bool(l != r),
+                _ => {
+                    return Err(TemporalError::EvalError(
+                        "String operator unsupported".into(),
+                    ))
+                }
+            },
+            (l, r) => {
+                return Err(TemporalError::TypeMismatch(format!(
+                    "Type mismatch in binary op: {:?} {:?} {:?}",
+                    l, op, r
+                )));
             }
-            BinaryOperator::Eq => (l == r) as i64,
-            BinaryOperator::Neq => (l != r) as i64,
-            BinaryOperator::Lt => (l < r) as i64,
-            BinaryOperator::Gt => (l > r) as i64,
-            BinaryOperator::Le => (l <= r) as i64,
-            BinaryOperator::Ge => (l >= r) as i64,
         };
 
-        Ok(Payload::Integer(result))
+        Ok(result)
     }
 
     fn evaluate_struct_literal(
@@ -97,6 +114,7 @@ impl Vm {
         match expr {
             Expression::Literal(val) => Ok(Payload::String(val.clone())),
             Expression::Integer(v) => Ok(Payload::Integer(*v)),
+            Expression::Boolean(v) => Ok(Payload::Bool(*v)),
             Expression::Null => Ok(Payload::Null),
             Expression::Identifier(name) => {
                 let (payload, is_entangled) = {

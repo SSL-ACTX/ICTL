@@ -366,6 +366,7 @@ fn lower_expression(expr: &Expression) -> String {
             format!("[{}]", parts.join(","))
         }
         Expression::Integer(i) => format!("{}", i),
+        Expression::Boolean(b) => format!("{}", b),
         Expression::Deferred { capability, .. } => {
             format!("defer {}(...)", capability)
         }

@@ -49,6 +49,14 @@ pub(crate) fn analyze_statement(
             else_branch,
             reconcile,
         } => {
+            let condition_type = crate::analysis::expression::infer_expression_type(
+                analyzer, condition,
+            )?;
+            if condition_type != crate::analysis::analyzer::ValueType::Bool {
+                return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
+                    format!("if condition must be bool, got {:?}", condition_type),
+                )));
+            }
             analyze_expression(analyzer, condition)?;
 
             let original_state = analyzer
@@ -124,6 +132,19 @@ pub(crate) fn analyze_statement(
                 }
             }
 
+            let mut merged_types = then_end_state.types.clone();
+            for (name, typ) in &else_end_state.types {
+                merged_types
+                    .entry(name.clone())
+                    .and_modify(|existing| {
+                        if existing != typ {
+                            *existing =
+                                crate::analysis::analyzer::ValueType::Unknown;
+                        }
+                    })
+                    .or_insert(typ.clone());
+            }
+
             let merged_state = BranchState {
                 consumed: then_end_state
                     .consumed
@@ -140,6 +161,7 @@ pub(crate) fn analyze_statement(
                     .union(&else_end_state.yields)
                     .cloned()
                     .collect(),
+                types: merged_types,
             };
 
             analyzer.branch_contexts = previous_contexts;
@@ -260,6 +282,12 @@ pub(crate) fn analyze_statement(
             for (_mode, param_name) in params {
                 routine_state.yields.insert(param_name.clone());
             }
+            for (_mode, param_name) in params {
+                routine_analyzer.set_variable_type(
+                    param_name,
+                    crate::analysis::analyzer::ValueType::Unknown,
+                );
+            }
 
             for stmt in body {
                 analyze_statement(&mut routine_analyzer, stmt)?;
@@ -286,7 +314,20 @@ pub(crate) fn analyze_statement(
                 .insert(name.clone(), (params.clone(), final_taking_ms));
         }
         Statement::Assignment { target, expr } => {
+            let expr_type =
+                crate::analysis::expression::infer_expression_type(analyzer, expr)?;
             analyze_expression(analyzer, expr)?;
+            if let Some(existing) = analyzer.get_variable_type(target) {
+                if existing != expr_type {
+                    return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
+                        format!(
+                            "variable '{}' assigned type {:?}, expected {:?}",
+                            target, expr_type, existing
+                        ),
+                    )));
+                }
+            }
+            analyzer.set_variable_type(target, expr_type);
             let state = analyzer
                 .branch_contexts
                 .get_mut(&analyzer.current_branch)
@@ -308,6 +349,7 @@ pub(crate) fn analyze_statement(
                         consumed: parent_state.consumed.clone(),
                         decayed: parent_state.decayed.clone(),
                         yields: HashSet::new(),
+                        types: parent_state.types.clone(),
                     },
                 );
             }
@@ -373,6 +415,11 @@ pub(crate) fn analyze_statement(
             let mut branch_results = Vec::new();
 
             for case in cases {
+                let case_type = crate::analysis::expression::infer_expression_type(
+                    analyzer,
+                    &case.source,
+                )
+                .unwrap_or(crate::analysis::analyzer::ValueType::Unknown);
                 analyze_expression(analyzer, &case.source)?;
 
                 let saved_contexts = analyzer.branch_contexts.clone();
@@ -380,6 +427,7 @@ pub(crate) fn analyze_statement(
                 branch_contexts
                     .insert(analyzer.current_branch.clone(), original_state.clone());
                 analyzer.branch_contexts = branch_contexts;
+                analyzer.set_variable_type(&case.binding, case_type);
 
                 for stmt in &case.body {
                     analyze_statement(analyzer, stmt)?;
@@ -608,13 +656,18 @@ pub(crate) fn analyze_statement(
         }
         Statement::Yield(_) => {}
         Statement::For {
-            item_name: _,
+            item_name,
             mode,
             source,
             body,
             pacing_ms,
             max_ms,
         } => {
+            let loop_item_type = analyzer
+                .get_variable_type(source)
+                .unwrap_or(crate::analysis::analyzer::ValueType::Unknown);
+            analyzer.set_variable_type(item_name, loop_item_type);
+
             if let ForMode::Consume = mode {
                 analyzer.mark_consumed(source)?;
             }

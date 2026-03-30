@@ -704,8 +704,14 @@ pub(crate) fn execute_statement_inner(
             reconcile,
         } => {
             let cond_payload = vm.evaluate_expression(branch_id, condition)?;
-            let cond_true = matches!(cond_payload, Payload::Integer(v) if v != 0)
-                || matches!(cond_payload, Payload::String(ref s) if s != "" );
+            let cond_true = match cond_payload {
+                Payload::Bool(b) => b,
+                _ => {
+                    return Err(TemporalError::EvalError(
+                        "if condition must be bool".into(),
+                    ))
+                }
+            };
 
             let then_cost = vm.estimate_block_cost(then_branch);
             let else_cost =
