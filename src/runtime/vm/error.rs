@@ -17,6 +17,8 @@ pub enum TemporalError {
     BranchNotFound(String),
     #[error("Capability violation: {0}")]
     CapabilityViolation(String),
+    #[error("Missing capability handler for: {0}")]
+    MissingCapability(String),
     #[error("Memory fault: {0}")]
     MemoryFault(#[from] MemoryError),
     #[error("Evaluation error: {0}")]

@@ -69,8 +69,13 @@ impl Vm {
 
         if let Some(handler) = self.capability_handlers.get(&cap.path) {
             handler(&cap.parameters).map_err(TemporalError::CapabilityViolation)?;
+            Ok(())
+        } else if cap.path == "System.Entropy" {
+            // System.Entropy is a built-in mode that does not require host handler.
+            Ok(())
+        } else {
+            Err(TemporalError::MissingCapability(cap.path.clone()))
         }
-        Ok(())
     }
 
     pub fn split_timeline(

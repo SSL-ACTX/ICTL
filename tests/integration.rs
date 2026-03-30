@@ -765,6 +765,107 @@ fn integration_analyzer_missing_capability_block() -> anyhow::Result<()> {
 }
 
 #[test]
+fn integration_isolate_print_requires_system_log() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      isolate demo {
+        enable cpu(10)
+        let msg = "hello"
+        print(msg)
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err(), "Print in isolate requires System.Log");
+
+    Ok(())
+}
+
+#[test]
+fn integration_isolate_print_with_system_log() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      isolate demo {
+        enable cpu(10)
+        require System.Log
+        let msg = "hello"
+        print(msg)
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    vm.register_capability("System.Log", |_params| Ok(()));
+
+    for timeline in &program.timelines {
+        let branch = match &timeline.time {
+            ictl::frontend::ast::TimeCoordinate::Global(_) => "main",
+            ictl::frontend::ast::TimeCoordinate::Relative(_) => "main",
+            ictl::frontend::ast::TimeCoordinate::Branch(name) => name.as_str(),
+        };
+        for stmt in &timeline.statements {
+            vm.execute_statement(branch, stmt)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn integration_isolate_print_without_system_log_handler_fails() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      isolate demo {
+        enable cpu(10)
+        require System.Log
+        let msg = "hello"
+        print(msg)
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+
+    let mut actual_err = None;
+    for timeline in &program.timelines {
+        let branch = match &timeline.time {
+            ictl::frontend::ast::TimeCoordinate::Global(_) => "main",
+            ictl::frontend::ast::TimeCoordinate::Relative(_) => "main",
+            ictl::frontend::ast::TimeCoordinate::Branch(name) => name.as_str(),
+        };
+        for stmt in &timeline.statements {
+            if let Err(e) = vm.execute_statement(branch, stmt) {
+                actual_err = Some(e);
+                break;
+            }
+        }
+        if actual_err.is_some() {
+            break;
+        }
+    }
+
+    match actual_err {
+        Some(TemporalError::MissingCapability(path)) => {
+            assert_eq!(path, "System.Log");
+        }
+        Some(e) => panic!("Unexpected runtime error: {e:?}"),
+        None => panic!("Expected missing capability runtime error"),
+    }
+
+    Ok(())
+}
+
+#[test]
 fn integration_watchdog_and_acausal_reset() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {

@@ -1,0 +1,11 @@
+@0ms: {
+  isolate demo {
+    enable cpu(10)
+    require System.Log
+    let msg = "Hello from System.Log via print"
+    print(msg)
+  }
+
+  let outer = "outer debug"
+  debug(outer)
+}

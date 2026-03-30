@@ -593,6 +593,13 @@ pub(crate) fn analyze_statement(
         }
         Statement::Print(expr) | Statement::Debug(expr) => {
             analyze_expression_nonconsuming(analyzer, expr)?;
+            if !analyzer.capability_stack.is_empty()
+                && !analyzer.is_capability_allowed("System.Log")
+            {
+                return Err(analyzer.annotate(
+                    SemanticErrorKind::MissingCapability("System.Log".to_string()),
+                ));
+            }
         }
         Statement::Commit(body) => {
             for inner_stmt in body {

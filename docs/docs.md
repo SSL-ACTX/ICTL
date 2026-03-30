@@ -48,6 +48,13 @@ ICTL interacts with the outside world through a **Capability System**. Every cap
 | `System.NetworkFetch` | `url: String`     | Initiates a `defer` promise to fetch external data.                          |
 | `System.Entropy`      | `mode: "chaos"`   | Disables rewinds for the current branch to permit non-deterministic entropy. |
 
+### Print/Debug behavior (runtime hardening)
+
+- `print(expr)` and `debug(expr)` now resolve through `System.Log(message=<value>)` by default.
+- If `System.Log` capability is required in an isolate manifest, the analyzer enforces it.
+- At runtime, missing `System.Log` handler returns `TemporalError::MissingCapability("System.Log")`.
+
+
 ---
 
 ## 🛠️ Tooling & Runtime

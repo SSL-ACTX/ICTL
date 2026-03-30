@@ -369,11 +369,32 @@ pub(crate) fn execute_statement_inner(
         }
         Statement::Print(expr) => {
             let payload = vm.evaluate_expression(branch_id, expr)?;
-            println!("[ictl] {}", payload);
+            let message = payload.to_string();
+            let cap = Capability {
+                path: "System.Log".to_string(),
+                parameters: [("message".to_string(), message)].into(),
+            };
+
+            if vm.capability_handlers.contains_key("System.Log") {
+                vm.execute_capability(branch_id, &cap)?;
+            } else {
+                // Fallback for host-side debugging outside strict capability isolation.
+                println!("[ictl] {}", payload);
+            }
         }
         Statement::Debug(expr) => {
             let payload = vm.evaluate_expression_nonconsuming(branch_id, expr)?;
-            println!("[ictl-debug] {}", payload);
+            let message = payload.to_string();
+            let cap = Capability {
+                path: "System.Log".to_string(),
+                parameters: [("message".to_string(), message)].into(),
+            };
+
+            if vm.capability_handlers.contains_key("System.Log") {
+                vm.execute_capability(branch_id, &cap)?;
+            } else {
+                println!("[ictl-debug] {}", payload);
+            }
         }
         Statement::Assignment { target, expr } => {
             if let Expression::Deferred {

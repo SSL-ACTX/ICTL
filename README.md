@@ -103,6 +103,8 @@ A watchdog intervenes if a worker timeline exceeds its temporal budget, resettin
     reset worker to safe_checkpoint
   }
 }
+
+ICTL now hardens logging by making `print(expr)` and `debug(expr)` resolve to `System.Log` by default. Isolated code must declare `require System.Log` in the manifest, and runtime will fail with `TemporalError::MissingCapability("System.Log")` when the handler is absent.
 ```
 
 ---
