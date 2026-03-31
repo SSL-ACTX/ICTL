@@ -61,7 +61,13 @@ pub enum Statement {
     Commit(Vec<SpannedStatement>),
     Assignment {
         target: String,
+        mutable: bool,
+        var_type: Option<TypeName>,
         expr: Expression,
+    },
+    TypeDecl {
+        name: String,
+        fields: HashMap<String, TypeName>,
     },
     Send {
         value_id: String,
@@ -232,6 +238,22 @@ pub struct SelectCase {
     pub binding: String,
     pub source: Expression,
     pub body: Vec<SpannedStatement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeName {
+    Builtin(BuiltinType),
+    Custom(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuiltinType {
+    Integer,
+    Bool,
+    String,
+    Struct,
+    Topology,
+    Array,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

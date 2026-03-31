@@ -28,6 +28,7 @@ impl Vm {
             | Statement::AcausalReset { .. }
             | Statement::Capability(_)
             | Statement::Assignment { .. }
+            | Statement::TypeDecl { .. }
             | Statement::FieldUpdate { .. }
             | Statement::Expression(_)
             | Statement::Print(_) => 0,

@@ -1,4 +1,5 @@
 // src/analysis/analyzer.rs
+use crate::analysis::types::Type;
 use crate::frontend::ast::*;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -77,24 +78,14 @@ impl std::error::Error for SemanticError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValueType {
-    Integer,
-    String,
-    Bool,
-    Null,
-    Struct,
-    Topology,
-    Array,
-    Unknown,
-}
-
 #[derive(Clone, Default)]
 pub(crate) struct BranchState {
     pub consumed: HashSet<String>,
     pub decayed: HashSet<String>,
     pub yields: HashSet<String>,
-    pub types: HashMap<String, ValueType>,
+    pub mutables: HashSet<String>,
+    pub types: HashMap<String, Type>,
+    pub custom_types: HashMap<String, Type>,
 }
 
 pub struct EntropicAnalyzer {
@@ -180,6 +171,18 @@ impl EntropicAnalyzer {
         &mut self,
         program: &Program,
     ) -> Result<(), SemanticError> {
+        // Reset mutable analysis state for each run.
+        self.branch_contexts.clear();
+        self.branch_contexts
+            .insert("main".to_string(), BranchState::default());
+        self.current_branch = "main".to_string();
+        self.current_statement = None;
+        self.current_span = None;
+        self.inspection_depth = 0;
+        self.current_slice_ms = None;
+        self.capability_stack.clear();
+        self.routines.clear();
+
         for block in &program.timelines {
             let old_branch = self.current_branch.clone();
             if let TimeCoordinate::Branch(id) = &block.time {
@@ -230,20 +233,93 @@ impl EntropicAnalyzer {
         Ok(())
     }
 
-    pub(crate) fn set_variable_type(&mut self, name: &str, vtype: ValueType) {
+    pub(crate) fn set_variable_type(&mut self, name: &str, vtype: Type) {
         let state = self.branch_contexts.get_mut(&self.current_branch).unwrap();
         state.types.insert(name.to_string(), vtype);
     }
 
-    pub(crate) fn get_variable_type(&self, name: &str) -> Option<ValueType> {
+    pub(crate) fn get_variable_type(&self, name: &str) -> Option<Type> {
         self.branch_contexts
             .get(&self.current_branch)
             .and_then(|state| state.types.get(name).cloned())
     }
 
+    pub(crate) fn set_custom_type(&mut self, name: &str, ctype: Type) {
+        let state = self.branch_contexts.get_mut(&self.current_branch).unwrap();
+        state.custom_types.insert(name.to_string(), ctype);
+    }
+
+    pub(crate) fn get_custom_type(&self, name: &str) -> Option<Type> {
+        self.branch_contexts
+            .get(&self.current_branch)
+            .and_then(|state| state.custom_types.get(name).cloned())
+    }
+
+    pub(crate) fn resolve_type(&self, typ: &Type) -> Type {
+        match typ {
+            Type::Custom(name) => self
+                .get_custom_type(name)
+                .unwrap_or(Type::Custom(name.clone())),
+            Type::Struct(fields) => {
+                let resolved_fields: std::collections::HashMap<String, Type> =
+                    fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), self.resolve_type(v)))
+                        .collect();
+                Type::Struct(resolved_fields)
+            }
+            Type::Topology(fields) => {
+                let resolved_fields: std::collections::HashMap<String, Type> =
+                    fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), self.resolve_type(v)))
+                        .collect();
+                Type::Topology(resolved_fields)
+            }
+            Type::Array(inner) => Type::Array(Box::new(self.resolve_type(inner))),
+            _ => typ.clone(),
+        }
+    }
+
+    pub(crate) fn types_compatible(&self, expected: &Type, actual: &Type) -> bool {
+        let expected = self.resolve_type(expected);
+        let actual = self.resolve_type(actual);
+
+        if matches!(expected, Type::Unknown) || matches!(actual, Type::Unknown) {
+            return true;
+        }
+
+        match (expected, actual) {
+            (Type::Integer, Type::Integer)
+            | (Type::Bool, Type::Bool)
+            | (Type::String, Type::String) => true,
+            (Type::Struct(exp_fields), Type::Struct(act_fields)) => {
+                if exp_fields.is_empty() {
+                    true
+                } else {
+                    exp_fields == act_fields
+                }
+            }
+            (Type::Topology(exp_fields), Type::Topology(act_fields)) => {
+                if exp_fields.is_empty() {
+                    true
+                } else {
+                    exp_fields == act_fields
+                }
+            }
+            (Type::Array(exp_inner), Type::Array(act_inner)) => {
+                self.types_compatible(&exp_inner, &act_inner)
+            }
+            (Type::Custom(exp_name), Type::Custom(act_name)) => exp_name == act_name,
+            (Type::Custom(_), _) => false,
+            (_, Type::Custom(_)) => false,
+            _ => false,
+        }
+    }
+
     fn statement_snippet(&self, stmt: &SpannedStatement) -> String {
         match &stmt.stmt {
-            Statement::Assignment { target, expr } => {
+            Statement::Assignment { target, expr, .. } => {
                 format!("let {} = {}", target, self.expr_snippet(expr))
             }
             Statement::Split { parent, branches } => {

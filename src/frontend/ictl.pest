@@ -36,6 +36,7 @@ statement = {
     | break_stmt
     | loop_stmt
     | yield_stmt
+    | type_decl
     | assignment_stmt
     | open_chan_stmt
     | chan_send_stmt
@@ -124,7 +125,10 @@ reconcile_clause = { "reconcile" ~ ("auto" | "(" ~ resolution_rules ~ ")") }
 anchor_stmt = { "anchor" ~ identifier }
 rewind_stmt = { "rewind_to" ~ "(" ~ identifier ~ ")" }
 commit_stmt = { "commit" ~ "{" ~ statement* ~ "}" }
-assignment_stmt = { "let" ~ identifier ~ "=" ~ expression }
+assignment_stmt = { "let" ~ identifier ~ type_annotation? ~ "=" ~ expression }
+
+type_annotation = { ":" ~ type_name }
+type_name = { identifier | "int" | "bool" | "string" | "struct" | "topology" | "array" }
 
 open_chan_stmt = { "open_chan" ~ identifier ~ "(" ~ amount ~ ")" }
 chan_send_stmt = { "chan_send" ~ identifier ~ "(" ~ identifier ~ ")" }
@@ -167,6 +171,9 @@ clone_op   = { "clone" ~ "(" ~ identifier ~ ")" }
 field_access = { identifier ~ "." ~ identifier }
 identifier_expr = { identifier }
 chan_recv_expr = { "chan_recv" ~ "(" ~ identifier ~ ")" }
+type_field = { identifier ~ ":" ~ type_name }
+type_field_list = { type_field ~ ("," ~ type_field)* }
+type_decl = { "type" ~ identifier ~ "=" ~ "struct" ~ "{" ~ type_field_list? ~ "}" }
 
 identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 string_literal = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }

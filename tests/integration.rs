@@ -119,6 +119,67 @@ fn integration_type_system_if_condition_must_be_bool() -> anyhow::Result<()> {
 }
 
 #[test]
+fn integration_type_annotation_assignment_matches() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let x: int = 1
+      let y: bool = false
+      let z = x + 2
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+    Ok(())
+}
+
+#[test]
+fn integration_type_annotation_assignment_mismatch() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      let x: bool = 1
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err());
+    Ok(())
+}
+
+#[test]
+fn integration_type_decl_and_custom_type_assignment() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      type Point = struct { x:int, y:int }
+      let p: Point = struct { x = 3, y = 4 }
+      let s = p.x + p.y
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+    Ok(())
+}
+
+#[test]
+fn integration_type_decl_assignment_mismatch() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      type Point = struct { x:int, y:int }
+      let p: Point = struct { x = 3, z = 4 }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    assert!(analyzer.analyze_program(&program).is_err());
+    Ok(())
+}
+
+#[test]
 fn integration_inspect_block_does_not_consume() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {

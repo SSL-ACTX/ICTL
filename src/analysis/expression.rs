@@ -1,31 +1,76 @@
 use crate::analysis::analyzer::{
-    EntropicAnalyzer, SemanticError, SemanticErrorKind, ValueType,
+    EntropicAnalyzer, SemanticError, SemanticErrorKind,
 };
+use crate::analysis::types::Type;
 use crate::frontend::ast::*;
 
 pub(crate) fn infer_expression_type(
     analyzer: &EntropicAnalyzer,
     expr: &Expression,
-) -> Result<ValueType, SemanticError> {
+) -> Result<Type, SemanticError> {
     match expr {
-        Expression::Null => Ok(ValueType::Null),
-        Expression::Boolean(_) => Ok(ValueType::Bool),
-        Expression::Integer(_) => Ok(ValueType::Integer),
-        Expression::Literal(_) => Ok(ValueType::String),
+        Expression::Null => Ok(Type::Unknown),
+        Expression::Boolean(_) => Ok(Type::Bool),
+        Expression::Integer(_) => Ok(Type::Integer),
+        Expression::Literal(_) => Ok(Type::String),
         Expression::Identifier(name) => match analyzer.get_variable_type(name) {
             Some(typ) => Ok(typ),
             None => Err(analyzer
                 .annotate(SemanticErrorKind::UndefinedVariable(name.to_string()))),
         },
-        Expression::StructLit(_) => Ok(ValueType::Struct),
-        Expression::TopologyLit(_) => Ok(ValueType::Topology),
-        Expression::ArrayLiteral(_) => Ok(ValueType::Array),
-        Expression::ChannelReceive(_) => Ok(ValueType::Unknown),
-        Expression::Deferred { .. } => Ok(ValueType::Unknown),
-        Expression::Call { .. } => Ok(ValueType::Unknown),
-        Expression::FieldAccess { .. } => Ok(ValueType::Unknown),
-        Expression::IndexAccess { .. } => Ok(ValueType::Unknown),
-        Expression::CloneOp(_) => Ok(ValueType::Unknown),
+        Expression::StructLit(fields) => {
+            let mut schema = std::collections::HashMap::new();
+            for (k, v) in fields {
+                schema.insert(k.clone(), infer_expression_type(analyzer, v)?);
+            }
+            Ok(Type::Struct(schema))
+        }
+        Expression::TopologyLit(fields) => {
+            let mut schema = std::collections::HashMap::new();
+            for (k, v) in fields {
+                schema.insert(k.clone(), infer_expression_type(analyzer, v)?);
+            }
+            Ok(Type::Topology(schema))
+        }
+        Expression::ArrayLiteral(elements) => {
+            let elem_types: Vec<Type> = elements
+                .iter()
+                .map(|e| infer_expression_type(analyzer, e))
+                .collect::<Result<_, _>>()?;
+            if elem_types.is_empty() {
+                Ok(Type::Array(Box::new(Type::Unknown)))
+            } else {
+                let first = elem_types[0].clone();
+                if elem_types.iter().all(|t| t == &first) {
+                    Ok(Type::Array(Box::new(first)))
+                } else {
+                    Ok(Type::Array(Box::new(Type::Unknown)))
+                }
+            }
+        }
+        Expression::ChannelReceive(_) => Ok(Type::Unknown),
+        Expression::Deferred { .. } => Ok(Type::Unknown),
+        Expression::Call { .. } => Ok(Type::Unknown),
+        Expression::FieldAccess { target, field } => {
+            let t = infer_expression_type(analyzer, target)?;
+            let resolved_t = analyzer.resolve_type(&t);
+            match resolved_t {
+                Type::Unknown => Ok(Type::Unknown),
+                Type::Struct(fields) | Type::Topology(fields) => {
+                    fields.get(field).cloned().ok_or_else(|| {
+                        analyzer.annotate(SemanticErrorKind::TypeMismatch(format!(
+                            "field '{}' not found",
+                            field
+                        )))
+                    })
+                }
+                _ => Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
+                    "field access on non-struct/topology".into(),
+                ))),
+            }
+        }
+        Expression::IndexAccess { .. } => Ok(Type::Unknown),
+        Expression::CloneOp(_) => Ok(Type::Unknown),
         Expression::BinaryOp { left, op, right } => {
             let left_type = infer_expression_type(analyzer, left)?;
             let right_type = infer_expression_type(analyzer, right)?;
@@ -34,10 +79,8 @@ pub(crate) fn infer_expression_type(
                 | crate::frontend::ast::BinaryOperator::Sub
                 | crate::frontend::ast::BinaryOperator::Mul
                 | crate::frontend::ast::BinaryOperator::Div => {
-                    if left_type == ValueType::Integer
-                        && right_type == ValueType::Integer
-                    {
-                        Ok(ValueType::Integer)
+                    if left_type == Type::Integer && right_type == Type::Integer {
+                        Ok(Type::Integer)
                     } else {
                         Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
                             format!(
@@ -50,7 +93,7 @@ pub(crate) fn infer_expression_type(
                 crate::frontend::ast::BinaryOperator::Eq
                 | crate::frontend::ast::BinaryOperator::Neq => {
                     if left_type == right_type {
-                        Ok(ValueType::Bool)
+                        Ok(Type::Bool)
                     } else {
                         Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
                             format!(
@@ -64,10 +107,8 @@ pub(crate) fn infer_expression_type(
                 | crate::frontend::ast::BinaryOperator::Gt
                 | crate::frontend::ast::BinaryOperator::Le
                 | crate::frontend::ast::BinaryOperator::Ge => {
-                    if left_type == ValueType::Integer
-                        && right_type == ValueType::Integer
-                    {
-                        Ok(ValueType::Bool)
+                    if left_type == Type::Integer && right_type == Type::Integer {
+                        Ok(Type::Bool)
                     } else {
                         Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
                             format!(

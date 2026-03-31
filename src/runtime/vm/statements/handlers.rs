@@ -176,6 +176,9 @@ pub(crate) fn execute_statement_inner(
         Statement::SpeculationMode(mode) => {
             vm.speculative_commit_mode = *mode;
         }
+        Statement::TypeDecl { .. } => {
+            // Type declarations are a compile-time construct only.
+        }
         Statement::AcausalReset {
             target,
             anchor_name,
@@ -396,7 +399,7 @@ pub(crate) fn execute_statement_inner(
                 println!("[ictl-debug] {}", payload);
             }
         }
-        Statement::Assignment { target, expr } => {
+        Statement::Assignment { target, expr, .. } => {
             if let Expression::Deferred {
                 capability,
                 params,

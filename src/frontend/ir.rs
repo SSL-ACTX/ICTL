@@ -103,7 +103,7 @@ fn lower_statement_lines(stmt: &Statement, indent: usize) -> Vec<IrInstruction> 
             args: vec![chan_id.clone(), value_id.clone()],
             indent,
         }],
-        Statement::Assignment { target, expr } => vec![IrInstruction {
+        Statement::Assignment { target, expr, .. } => vec![IrInstruction {
             op: "ASSIGN".to_string(),
             args: vec![target.clone(), lower_expression(expr)],
             indent,
@@ -136,6 +136,11 @@ fn lower_statement_lines(stmt: &Statement, indent: usize) -> Vec<IrInstruction> 
         Statement::Entangle { variables } => vec![IrInstruction {
             op: "ENTANGLE".to_string(),
             args: variables.clone(),
+            indent,
+        }],
+        Statement::TypeDecl { name, fields } => vec![IrInstruction {
+            op: format!("TYPE_DECL {}", name),
+            args: fields.keys().cloned().collect(),
             indent,
         }],
         _ => vec![IrInstruction {
@@ -175,7 +180,7 @@ fn lower_statement(stmt: &Statement) -> String {
         Statement::Anchor(name) => format!("anchor {}", name),
         Statement::Rewind(name) => format!("rewind_to {}", name),
         Statement::Commit(_) => "commit { ... }".to_string(),
-        Statement::Assignment { target, expr } => {
+        Statement::Assignment { target, expr, .. } => {
             format!("{} = {}", target, lower_expression(expr))
         }
         Statement::Send {
@@ -329,6 +334,7 @@ fn lower_statement(stmt: &Statement) -> String {
                 lower_expression(value)
             )
         }
+        Statement::TypeDecl { name, .. } => format!("type {} {{ ... }}", name),
         Statement::Entangle { variables } => {
             format!("entangle({})", variables.join(", "))
         }

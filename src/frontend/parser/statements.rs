@@ -121,15 +121,76 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
         Rule::require_decl => Statement::Capability(parse_capability(pair)),
         Rule::assignment_stmt => {
             let mut inner = pair.into_inner();
+            let mut mutable = false;
+            if let Some(first) = inner.peek() {
+                if first.as_str() == "mut" {
+                    mutable = true;
+                    inner.next();
+                }
+            }
+
             let target = inner
                 .next()
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
+            let mut var_type: Option<TypeName> = None;
+            if let Some(next_pair) = inner.peek() {
+                if next_pair.as_rule() == Rule::type_annotation {
+                    let type_annotation_pair = inner.next().unwrap();
+                    if let Some(type_name_pair) =
+                        type_annotation_pair.into_inner().next()
+                    {
+                        var_type = Some(match type_name_pair.as_str() {
+                            "int" => TypeName::Builtin(BuiltinType::Integer),
+                            "bool" => TypeName::Builtin(BuiltinType::Bool),
+                            "string" => TypeName::Builtin(BuiltinType::String),
+                            "struct" => TypeName::Builtin(BuiltinType::Struct),
+                            "topology" => TypeName::Builtin(BuiltinType::Topology),
+                            "array" => TypeName::Builtin(BuiltinType::Array),
+                            other => TypeName::Custom(other.to_string()),
+                        });
+                    }
+                }
+            }
+
             let expr = inner
                 .next()
                 .map(parse_expression)
                 .unwrap_or(Expression::Literal("void".into()));
-            Statement::Assignment { target, expr }
+
+            Statement::Assignment {
+                target,
+                mutable,
+                var_type,
+                expr,
+            }
+        }
+        Rule::type_decl => {
+            let mut inner = pair.into_inner();
+            let name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut fields = std::collections::HashMap::new();
+            if let Some(field_list) = inner.next() {
+                for field_pair in field_list.into_inner() {
+                    let mut kv = field_pair.into_inner();
+                    if let (Some(id), Some(type_name_pair)) = (kv.next(), kv.next())
+                    {
+                        let field_type = match type_name_pair.as_str() {
+                            "int" => TypeName::Builtin(BuiltinType::Integer),
+                            "bool" => TypeName::Builtin(BuiltinType::Bool),
+                            "string" => TypeName::Builtin(BuiltinType::String),
+                            "struct" => TypeName::Builtin(BuiltinType::Struct),
+                            "topology" => TypeName::Builtin(BuiltinType::Topology),
+                            "array" => TypeName::Builtin(BuiltinType::Array),
+                            other => TypeName::Custom(other.to_string()),
+                        };
+                        fields.insert(id.as_str().to_string(), field_type);
+                    }
+                }
+            }
+            Statement::TypeDecl { name, fields }
         }
         Rule::open_chan_stmt => {
             let mut inner = pair.into_inner();

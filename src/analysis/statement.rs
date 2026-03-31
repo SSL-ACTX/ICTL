@@ -4,6 +4,7 @@ use crate::analysis::analyzer::{
 use crate::analysis::expression::{
     analyze_expression, analyze_expression_nonconsuming, estimate_expression_cost,
 };
+use crate::analysis::types::Type;
 use crate::frontend::ast::*;
 use std::collections::HashSet;
 
@@ -52,7 +53,7 @@ pub(crate) fn analyze_statement(
             let condition_type = crate::analysis::expression::infer_expression_type(
                 analyzer, condition,
             )?;
-            if condition_type != crate::analysis::analyzer::ValueType::Bool {
+            if condition_type != crate::analysis::types::Type::Bool {
                 return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
                     format!("if condition must be bool, got {:?}", condition_type),
                 )));
@@ -138,8 +139,7 @@ pub(crate) fn analyze_statement(
                     .entry(name.clone())
                     .and_modify(|existing| {
                         if existing != typ {
-                            *existing =
-                                crate::analysis::analyzer::ValueType::Unknown;
+                            *existing = crate::analysis::types::Type::Unknown;
                         }
                     })
                     .or_insert(typ.clone());
@@ -161,7 +161,13 @@ pub(crate) fn analyze_statement(
                     .union(&else_end_state.yields)
                     .cloned()
                     .collect(),
+                mutables: then_end_state
+                    .mutables
+                    .union(&else_end_state.mutables)
+                    .cloned()
+                    .collect(),
                 types: merged_types,
+                custom_types: then_end_state.custom_types.clone(),
             };
 
             analyzer.branch_contexts = previous_contexts;
@@ -185,6 +191,14 @@ pub(crate) fn analyze_statement(
             analyzer
                 .branch_contexts
                 .insert(analyzer.current_branch.clone(), snapshot);
+        }
+        Statement::TypeDecl { name, fields } => {
+            let mut schema = std::collections::HashMap::new();
+            for (field_name, field_type) in fields {
+                schema.insert(field_name.clone(), Type::from_typename(field_type));
+            }
+            let type_struct = Type::Struct(schema);
+            analyzer.set_custom_type(name, type_struct);
         }
         Statement::Await(target) => {
             let state = analyzer
@@ -285,7 +299,7 @@ pub(crate) fn analyze_statement(
             for (_mode, param_name) in params {
                 routine_analyzer.set_variable_type(
                     param_name,
-                    crate::analysis::analyzer::ValueType::Unknown,
+                    crate::analysis::types::Type::Unknown,
                 );
             }
 
@@ -313,21 +327,59 @@ pub(crate) fn analyze_statement(
                 .routines
                 .insert(name.clone(), (params.clone(), final_taking_ms));
         }
-        Statement::Assignment { target, expr } => {
+        Statement::Assignment {
+            target,
+            mutable,
+            var_type,
+            expr,
+        } => {
             let expr_type =
                 crate::analysis::expression::infer_expression_type(analyzer, expr)?;
             analyze_expression(analyzer, expr)?;
-            if let Some(existing) = analyzer.get_variable_type(target) {
-                if existing != expr_type {
-                    return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
-                        format!(
-                            "variable '{}' assigned type {:?}, expected {:?}",
-                            target, expr_type, existing
-                        ),
-                    )));
-                }
+
+            let state = analyzer
+                .branch_contexts
+                .get_mut(&analyzer.current_branch)
+                .unwrap();
+            if state.types.contains_key(target)
+                && !state.mutables.contains(target)
+                && !mutable
+            {
+                return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
+                    format!("cannot assign to immutable variable '{}'", target),
+                )));
             }
-            analyzer.set_variable_type(target, expr_type);
+            if *mutable {
+                state.mutables.insert(target.clone());
+            }
+
+            let inferred_target_type = if let Some(expected_type) = var_type {
+                crate::analysis::types::Type::from_typename(expected_type)
+            } else {
+                analyzer
+                    .get_variable_type(target)
+                    .unwrap_or(expr_type.clone())
+            };
+
+            let expected_type = analyzer.resolve_type(&inferred_target_type);
+            let actual_type = analyzer.resolve_type(&expr_type);
+
+            if !analyzer.types_compatible(&expected_type, &actual_type) {
+                return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
+                    format!(
+                        "variable '{}' assigned type {:?}, expected {:?}",
+                        target, actual_type, expected_type
+                    ),
+                )));
+            }
+
+            if let Some(expected_type) = var_type {
+                analyzer
+                    .set_variable_type(target, Type::from_typename(expected_type));
+            } else {
+                analyzer.set_variable_type(target, expr_type);
+            }
+
             let state = analyzer
                 .branch_contexts
                 .get_mut(&analyzer.current_branch)
@@ -349,7 +401,9 @@ pub(crate) fn analyze_statement(
                         consumed: parent_state.consumed.clone(),
                         decayed: parent_state.decayed.clone(),
                         yields: HashSet::new(),
+                        mutables: parent_state.mutables.clone(),
                         types: parent_state.types.clone(),
+                        custom_types: parent_state.custom_types.clone(),
                     },
                 );
             }
@@ -419,7 +473,7 @@ pub(crate) fn analyze_statement(
                     analyzer,
                     &case.source,
                 )
-                .unwrap_or(crate::analysis::analyzer::ValueType::Unknown);
+                .unwrap_or(crate::analysis::types::Type::Unknown);
                 analyze_expression(analyzer, &case.source)?;
 
                 let saved_contexts = analyzer.branch_contexts.clone();
@@ -538,6 +592,11 @@ pub(crate) fn analyze_statement(
                     .yields
                     .insert(binding.clone());
 
+                let case_type = crate::analysis::expression::infer_expression_type(
+                    analyzer, target,
+                )?;
+                analyzer.set_variable_type(binding, case_type);
+
                 analyze_expression(analyzer, target)?;
 
                 for stmt in branch_body {
@@ -565,6 +624,11 @@ pub(crate) fn analyze_statement(
                     .unwrap()
                     .yields
                     .insert(binding.clone());
+
+                let case_type = crate::analysis::expression::infer_expression_type(
+                    analyzer, target,
+                )?;
+                analyzer.set_variable_type(binding, case_type);
 
                 analyze_expression(analyzer, target)?;
 
@@ -663,9 +727,27 @@ pub(crate) fn analyze_statement(
             pacing_ms,
             max_ms,
         } => {
-            let loop_item_type = analyzer
+            let source_type = analyzer
                 .get_variable_type(source)
-                .unwrap_or(crate::analysis::analyzer::ValueType::Unknown);
+                .unwrap_or(crate::analysis::types::Type::Unknown);
+
+            let loop_item_type = match source_type {
+                crate::analysis::types::Type::Struct(_)
+                | crate::analysis::types::Type::Topology(_) => {
+                    let mut item_fields = std::collections::HashMap::new();
+                    item_fields.insert(
+                        "key".to_string(),
+                        crate::analysis::types::Type::String,
+                    );
+                    item_fields.insert(
+                        "value".to_string(),
+                        crate::analysis::types::Type::Unknown,
+                    );
+                    crate::analysis::types::Type::Struct(item_fields)
+                }
+                crate::analysis::types::Type::Array(inner) => *inner.clone(),
+                other => other,
+            };
             analyzer.set_variable_type(item_name, loop_item_type);
 
             if let ForMode::Consume = mode {
@@ -859,6 +941,7 @@ pub(crate) fn estimate_statement_cost(
         Statement::SpeculationMode(_) => 0,
         Statement::Break => 0,
         Statement::Entangle { .. } => 0,
+        Statement::TypeDecl { .. } => 0,
         Statement::RoutineDef { taking_ms, .. } => taking_ms.unwrap_or(0),
     };
     base + extra
