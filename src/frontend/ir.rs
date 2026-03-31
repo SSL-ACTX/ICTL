@@ -278,12 +278,24 @@ fn lower_statement(stmt: &Statement) -> String {
             fn type_name_to_string(t: &crate::frontend::ast::TypeName) -> String {
                 match t {
                     crate::frontend::ast::TypeName::Builtin(b) => match b {
-                        crate::frontend::ast::BuiltinType::Integer => "int".to_string(),
-                        crate::frontend::ast::BuiltinType::Bool => "bool".to_string(),
-                        crate::frontend::ast::BuiltinType::String => "string".to_string(),
-                        crate::frontend::ast::BuiltinType::Struct => "struct".to_string(),
-                        crate::frontend::ast::BuiltinType::Topology => "topology".to_string(),
-                        crate::frontend::ast::BuiltinType::Array => "array".to_string(),
+                        crate::frontend::ast::BuiltinType::Integer => {
+                            "int".to_string()
+                        }
+                        crate::frontend::ast::BuiltinType::Bool => {
+                            "bool".to_string()
+                        }
+                        crate::frontend::ast::BuiltinType::String => {
+                            "string".to_string()
+                        }
+                        crate::frontend::ast::BuiltinType::Struct => {
+                            "struct".to_string()
+                        }
+                        crate::frontend::ast::BuiltinType::Topology => {
+                            "topology".to_string()
+                        }
+                        crate::frontend::ast::BuiltinType::Array => {
+                            "array".to_string()
+                        }
                     },
                     crate::frontend::ast::TypeName::Custom(name) => name.clone(),
                     crate::frontend::ast::TypeName::Optional(inner) => {
@@ -293,7 +305,7 @@ fn lower_statement(stmt: &Statement) -> String {
                         .iter()
                         .map(|p| type_name_to_string(p))
                         .collect::<Vec<_>>()
-                        .join("|")
+                        .join("|"),
                 }
             }
 

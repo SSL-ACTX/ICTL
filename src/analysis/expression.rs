@@ -56,7 +56,7 @@ pub(crate) fn infer_expression_type(
             } else {
                 Ok(Type::Unknown)
             }
-        },
+        }
         Expression::FieldAccess { target, field } => {
             let t = infer_expression_type(analyzer, target)?;
             let resolved_t = analyzer.resolve_type(&t);
@@ -137,16 +137,12 @@ pub(crate) fn analyze_expression(
     match expr {
         Expression::Null => Ok(()),
         Expression::Call { routine, args } => {
-            let info = analyzer
-                .routines
-                .get(routine)
-                .cloned()
-                .ok_or_else(|| {
-                    analyzer.annotate(SemanticErrorKind::EntropyMismatch(format!(
-                        "unknown routine {}",
-                        routine
-                    )))
-                })?;
+            let info = analyzer.routines.get(routine).cloned().ok_or_else(|| {
+                analyzer.annotate(SemanticErrorKind::EntropyMismatch(format!(
+                    "unknown routine {}",
+                    routine
+                )))
+            })?;
 
             if args.len() != info.params.len() {
                 return Err(analyzer.annotate(SemanticErrorKind::EntropyMismatch(
@@ -168,9 +164,7 @@ pub(crate) fn analyze_expression(
                     return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
                         format!(
                             "routine {} arg type mismatch: expected {:?}, got {:?}",
-                            routine,
-                            expected_type,
-                            arg_type
+                            routine, expected_type, arg_type
                         ),
                     )));
                 }

@@ -1,24 +1,28 @@
-use ictl::analysis::analyzer::{EntropicAnalyzer, BranchState};
+use ictl::analysis::analyzer::{BranchState, EntropicAnalyzer};
 use ictl::frontend::ast::Program;
 use ictl::frontend::parser::parse_ictl;
-use tower_lsp::lsp_types::*;
 use std::collections::HashMap;
+use tower_lsp::lsp_types::*;
 
 pub struct AnalysisResults {
     pub diagnostics: Vec<Diagnostic>,
     pub program: Option<Program>,
     pub analyzer: EntropicAnalyzer,
+    pub source: Option<String>,
 }
 
 pub fn analyze(text: &str, _filename: &str) -> AnalysisResults {
     let mut diagnostics = Vec::new();
     let mut program_opt = None;
     let mut analyzer = EntropicAnalyzer::new();
+    let source_text = Some(text.to_string());
 
     match parse_ictl(text) {
         Ok(program) => {
             program_opt = Some(program.clone());
-            if let Err(err) = analyzer.analyze_program_with_source(&program, text, _filename) {
+            if let Err(err) =
+                analyzer.analyze_program_with_source(&program, text, _filename)
+            {
                 diagnostics.push(Diagnostic {
                     range: Range {
                         start: Position {
@@ -51,5 +55,6 @@ pub fn analyze(text: &str, _filename: &str) -> AnalysisResults {
         diagnostics,
         program: program_opt,
         analyzer,
+        source: source_text,
     }
 }

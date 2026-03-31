@@ -1,8 +1,8 @@
+use crate::analysis_worker::AnalysisResults;
 use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
-use crate::analysis_worker::AnalysisResults;
 
 pub struct Backend {
     client: Client,
@@ -20,7 +20,8 @@ impl Backend {
     }
 
     async fn on_change(&self, params: TextDocumentItem) {
-        self.document_map.insert(params.uri.clone(), params.text.clone());
+        self.document_map
+            .insert(params.uri.clone(), params.text.clone());
         self.validate_document(params.uri).await;
     }
 
@@ -30,11 +31,13 @@ impl Backend {
         let path_str = path.to_string_lossy().to_string();
 
         let results = crate::analysis_worker::analyze(&text, &path_str);
-        
+
         // Publish diagnostics
         let diagnostics = results.diagnostics.clone();
-        self.client.publish_diagnostics(uri.clone(), diagnostics, None).await;
-        
+        self.client
+            .publish_diagnostics(uri.clone(), diagnostics, None)
+            .await;
+
         // Cache results for hover/tokens
         self.analysis_cache.insert(uri, results);
     }
@@ -56,7 +59,8 @@ impl LanguageServer for Backend {
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
-                            work_done_progress_options: WorkDoneProgressOptions::default(),
+                            work_done_progress_options:
+                                WorkDoneProgressOptions::default(),
                             legend: SemanticTokensLegend {
                                 token_types: vec![
                                     SemanticTokenType::VARIABLE,
@@ -96,7 +100,8 @@ impl LanguageServer for Backend {
                 text: change.text,
                 version: params.text_document.version,
                 language_id: "ictl".to_string(),
-            }).await;
+            })
+            .await;
         }
     }
 

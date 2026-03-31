@@ -287,16 +287,17 @@ impl EntropicAnalyzer {
                 Type::Topology(resolved_fields)
             }
             Type::Array(inner) => Type::Array(Box::new(self.resolve_type(inner))),
-            Type::Optional(inner) => Type::Optional(Box::new(self.resolve_type(inner))),
-            Type::Union(items) => Type::Union(items
-                .into_iter()
-                .map(|t| self.resolve_type(&t))
-                .collect()),
-            Type::Function { params, return_type } => Type::Function {
-                params: params
-                    .into_iter()
-                    .map(|p| self.resolve_type(&p))
-                    .collect(),
+            Type::Optional(inner) => {
+                Type::Optional(Box::new(self.resolve_type(inner)))
+            }
+            Type::Union(items) => Type::Union(
+                items.into_iter().map(|t| self.resolve_type(&t)).collect(),
+            ),
+            Type::Function {
+                params,
+                return_type,
+            } => Type::Function {
+                params: params.into_iter().map(|p| self.resolve_type(&p)).collect(),
                 return_type: Box::new(self.resolve_type(&return_type)),
             },
             _ => typ.clone(),
@@ -354,14 +355,22 @@ impl EntropicAnalyzer {
             (act_ty, Type::Optional(exp_inner)) => {
                 self.types_compatible(&act_ty, &exp_inner)
             }
-            (Type::Union(exp_types), act_ty) => exp_types
-                .iter()
-                .any(|t| self.types_compatible(t, &act_ty)),
-            (act_ty, Type::Union(exp_types)) => exp_types
-                .iter()
-                .any(|t| self.types_compatible(&act_ty, t)),
-            (Type::Function { params: exp_params, return_type: exp_rt },
-             Type::Function { params: act_params, return_type: act_rt }) => {
+            (Type::Union(exp_types), act_ty) => {
+                exp_types.iter().any(|t| self.types_compatible(t, &act_ty))
+            }
+            (act_ty, Type::Union(exp_types)) => {
+                exp_types.iter().any(|t| self.types_compatible(&act_ty, t))
+            }
+            (
+                Type::Function {
+                    params: exp_params,
+                    return_type: exp_rt,
+                },
+                Type::Function {
+                    params: act_params,
+                    return_type: act_rt,
+                },
+            ) => {
                 exp_params.len() == act_params.len()
                     && exp_params
                         .iter()

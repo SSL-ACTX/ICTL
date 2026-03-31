@@ -33,12 +33,14 @@ impl Type {
                 BuiltinType::Array => Type::Array(Box::new(Type::Unknown)),
             },
             TypeName::Custom(name) => Type::Custom(name.clone()),
-            TypeName::Optional(inner) => Type::Optional(Box::new(Type::from_typename(inner))),
-            TypeName::Union(parts) => Type::Union(
-                parts.iter().map(|p| Type::from_typename(p)).collect(),
-            ),
+            TypeName::Optional(inner) => {
+                Type::Optional(Box::new(Type::from_typename(inner)))
+            }
+            TypeName::Union(parts) => {
+                Type::Union(parts.iter().map(|p| Type::from_typename(p)).collect())
+            }
         }
-    } 
+    }
 
     #[allow(unused)]
     pub fn is_numeric(&self) -> bool {
@@ -49,7 +51,7 @@ impl Type {
     pub fn is_bool(&self) -> bool {
         matches!(self, Type::Bool)
     }
-    
+
     #[allow(unused)]
     pub fn is_string(&self) -> bool {
         matches!(self, Type::String)

@@ -370,8 +370,14 @@ pub(crate) fn execute_statement_inner(
                                 p.name.clone(),
                                 p.typ
                                     .as_ref()
-                                    .map(|t| crate::analysis::types::Type::from_typename(t))
-                                    .unwrap_or(crate::analysis::types::Type::Unknown),
+                                    .map(|t| {
+                                        crate::analysis::types::Type::from_typename(
+                                            t,
+                                        )
+                                    })
+                                    .unwrap_or(
+                                        crate::analysis::types::Type::Unknown,
+                                    ),
                             )
                         })
                         .collect(),

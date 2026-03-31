@@ -1,7 +1,7 @@
-use tower_lsp::lsp_types::*;
 use crate::analysis_worker::AnalysisResults;
-use ictl::frontend::ast::*;
 use dashmap::DashMap;
+use ictl::frontend::ast::*;
+use tower_lsp::lsp_types::*;
 
 pub async fn handle_tokens(
     params: SemanticTokensParams,
@@ -17,14 +17,31 @@ pub async fn handle_tokens(
     let mut last_line = 0;
     let mut last_start = 0;
 
+    let source = match results.source.as_ref() {
+        Some(src) => src,
+        None => {
+            return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+                result_id: None,
+                data: vec![],
+            })))
+        }
+    };
+
     if let Some(program) = &results.program {
         for timeline in &program.timelines {
             for stmt in &timeline.statements {
                 let state = results.analyzer.span_states.get(&stmt.span);
-                
+
                 // For each statement, we walk its expressions to find identifiers
                 // This is a simplified visitor
-                walk_statement(stmt, state, &mut tokens, &mut last_line, &mut last_start, &results.analyzer.source.as_ref().unwrap());
+                walk_statement(
+                    stmt,
+                    state,
+                    &mut tokens,
+                    &mut last_line,
+                    &mut last_start,
+                    source,
+                );
             }
         }
     }
@@ -33,6 +50,60 @@ pub async fn handle_tokens(
         result_id: None,
         data: tokens,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis_worker::AnalysisResults;
+    use dashmap::DashMap;
+    use ictl::analysis::analyzer::EntropicAnalyzer;
+    use ictl::frontend::ast::*;
+    use tower_lsp::lsp_types::Url;
+
+    #[tokio::test]
+    async fn handle_tokens_with_missing_source_does_not_panic() {
+        let mut cache = DashMap::new();
+        let program = Program {
+            timelines: vec![TimelineBlock {
+                time: TimeCoordinate::Global(0),
+                statements: vec![SpannedStatement {
+                    stmt: Statement::Expression(Expression::Identifier(
+                        "x".to_string(),
+                    )),
+                    span: Span { start: 0, end: 1 },
+                }],
+            }],
+        };
+
+        cache.insert(
+            Url::parse("file:///tmp/test.ictl").unwrap(),
+            AnalysisResults {
+                diagnostics: vec![],
+                program: Some(program),
+                analyzer: EntropicAnalyzer::new(),
+                source: None,
+            },
+        );
+
+        let result = handle_tokens(
+            SemanticTokensParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("file:///tmp/test.ictl").unwrap(),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            &cache,
+        )
+        .await
+        .unwrap();
+
+        match result {
+            Some(SemanticTokensResult::Tokens(t)) => assert!(t.data.is_empty()),
+            _ => panic!("Expected tokens result"),
+        }
+    }
 }
 
 fn walk_statement(
@@ -45,14 +116,22 @@ fn walk_statement(
 ) {
     match &stmt.stmt {
         Statement::Assignment { target, expr, .. } => {
-            push_variable_token(target, &stmt.span, state, tokens, last_line, last_start, source);
-            walk_expression(expr, &stmt.span, state, tokens, last_line, last_start, source);
+            push_variable_token(
+                target, &stmt.span, state, tokens, last_line, last_start, source,
+            );
+            walk_expression(
+                expr, &stmt.span, state, tokens, last_line, last_start, source,
+            );
         }
         Statement::Expression(expr) => {
-            walk_expression(expr, &stmt.span, state, tokens, last_line, last_start, source);
+            walk_expression(
+                expr, &stmt.span, state, tokens, last_line, last_start, source,
+            );
         }
         Statement::If { condition, .. } => {
-            walk_expression(condition, &stmt.span, state, tokens, last_line, last_start, source);
+            walk_expression(
+                condition, &stmt.span, state, tokens, last_line, last_start, source,
+            );
             // Internal branches are handled in the main loop
         }
         // ... add more as needed
@@ -71,23 +150,35 @@ fn walk_expression(
 ) {
     match expr {
         Expression::Identifier(name) => {
-            push_variable_token(name, span, state, tokens, last_line, last_start, source);
+            push_variable_token(
+                name, span, state, tokens, last_line, last_start, source,
+            );
         }
         Expression::BinaryOp { left, right, .. } => {
-            walk_expression(left, span, state, tokens, last_line, last_start, source);
-            walk_expression(right, span, state, tokens, last_line, last_start, source);
+            walk_expression(
+                left, span, state, tokens, last_line, last_start, source,
+            );
+            walk_expression(
+                right, span, state, tokens, last_line, last_start, source,
+            );
         }
         Expression::Call { args, .. } => {
             for arg in args {
-                walk_expression(arg, span, state, tokens, last_line, last_start, source);
+                walk_expression(
+                    arg, span, state, tokens, last_line, last_start, source,
+                );
             }
         }
         Expression::FieldAccess { target, .. } => {
-            walk_expression(target, span, state, tokens, last_line, last_start, source);
+            walk_expression(
+                target, span, state, tokens, last_line, last_start, source,
+            );
         }
         Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
             for v in fields.values() {
-                walk_expression(v, span, state, tokens, last_line, last_start, source);
+                walk_expression(
+                    v, span, state, tokens, last_line, last_start, source,
+                );
             }
         }
         _ => {}

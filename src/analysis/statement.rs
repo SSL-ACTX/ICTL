@@ -308,10 +308,8 @@ pub(crate) fn analyze_statement(
 
             if let Some(rt) = return_type {
                 // store a placeholder for return type in analyzer state if needed
-                let routine_state = routine_analyzer
-                    .branch_contexts
-                    .get_mut("main")
-                    .unwrap();
+                let routine_state =
+                    routine_analyzer.branch_contexts.get_mut("main").unwrap();
                 routine_state.yields.insert("<return>".to_string());
                 let _ = routine_state;
 
