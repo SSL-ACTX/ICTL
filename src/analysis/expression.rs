@@ -312,7 +312,7 @@ pub(crate) fn analyze_expression_nonconsuming(
     }
 }
 
-pub(crate) fn estimate_expression_cost(
+pub fn estimate_expression_cost(
     analyzer: &EntropicAnalyzer,
     expr: &Expression,
 ) -> u64 {

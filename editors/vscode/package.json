@@ -1,0 +1,59 @@
+{
+    "name": "ictl-vscode",
+    "displayName": "ICTL Entropic Extension",
+    "description": "Language support for ICTL with Entropic Shading and Temporal Pacing.",
+    "version": "0.1.0",
+    "engines": {
+        "vscode": "^1.75.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "activationEvents": [],
+    "main": "./out/extension.js",
+    "contributes": {
+        "languages": [{
+            "id": "ictl",
+            "aliases": ["ICTL", "ictl"],
+            "extensions": [".ictl"],
+            "configuration": "./language-configuration.json"
+        }],
+        "grammars": [{
+            "language": "ictl",
+            "scopeName": "source.ictl",
+            "path": "./syntaxes/ictl.tmLanguage.json"
+        }],
+        "configuration": {
+            "title": "ICTL",
+            "properties": {
+                "ictl.lsp.path": {
+                    "type": "string",
+                    "default": null,
+                    "description": "Path to the ictl-lsp binary"
+                }
+            }
+        },
+        "semanticTokenTypes": [
+            { "id": "ictl_valid", "description": "Valid entropic state" },
+            { "id": "ictl_decayed", "description": "Decayed entropic state" },
+            { "id": "ictl_consumed", "description": "Consumed entropic state" }
+        ],
+        "semanticTokenScopes": [
+            { "language": "ictl", "scopes": { "ictl_valid": ["variable.other"], "ictl_decayed": ["markup.changed"], "ictl_consumed": ["comment"] } }
+        ]
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "pretest": "npm run compile && npm run lint",
+        "lint": "eslint src --ext ts",
+        "test": "node ./out/test/runTest.js"
+    },
+    "devDependencies": {
+        "@types/node": "^16.11.7",
+        "@types/vscode": "^1.75.0",
+        "typescript": "^4.5.2",
+        "vscode-languageclient": "^8.1.0"
+    }
+}

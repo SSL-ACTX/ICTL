@@ -865,7 +865,7 @@ pub(crate) fn analyze_statement(
     Ok(())
 }
 
-pub(crate) fn estimate_block_cost(
+pub fn estimate_block_cost(
     analyzer: &EntropicAnalyzer,
     block: &[SpannedStatement],
 ) -> u64 {
@@ -875,7 +875,7 @@ pub(crate) fn estimate_block_cost(
         .sum()
 }
 
-pub(crate) fn estimate_statement_cost(
+pub fn estimate_statement_cost(
     analyzer: &EntropicAnalyzer,
     stmt: &Statement,
 ) -> u64 {

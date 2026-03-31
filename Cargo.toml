@@ -1,4 +1,7 @@
 # Cargo.toml
+[workspace]
+members = [".", "lsp"]
+
 [package]
 name = "ictl"
 version = "0.1.0"

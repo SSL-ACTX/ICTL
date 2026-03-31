@@ -1,0 +1,61 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "ICTL",
+    "patterns": [
+        { "include": "#comments" },
+        { "include": "#keywords" },
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#constants" }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.ictl",
+                    "match": "//.*"
+                },
+                {
+                    "name": "comment.line.number-sign.ictl",
+                    "match": "#.*"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.ictl",
+                    "match": "\\b(isolate|split|merge|routine|for|inspect|print|debug|log|anchor|rewind_to|commit|speculate|fallback|collapse|speculation_mode|select|case|timeout|match|entropy|await|if|else|break|loop|tick|slice|yield|type|open_chan|chan_send|require|enable|network_request|entangle|reset|into|resolving|taking|pacing|max|deadline|on_invalid|to|reconcile|auto|first_wins|decay|priority|topology_union|topology_intersect)\\b"
+                },
+                {
+                    "name": "storage.type.ictl",
+                    "match": "\\b(int|bool|string|struct|topology|array|let)\\b"
+                },
+                {
+                    "name": "keyword.other.ictl",
+                    "match": "\\b(call|chan_recv|clone)\\b"
+                }
+            ]
+        },
+        "strings": {
+            "name": "string.quoted.double.ictl",
+            "begin": "\"",
+            "end": "\"",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.ictl",
+                    "match": "\\\\."
+                }
+            ]
+        },
+        "numbers": {
+            "name": "constant.numeric.ictl",
+            "match": "\\b([0-9]+(ms|KB|MB|bytes)?)\\b"
+        },
+        "constants": {
+            "name": "constant.language.ictl",
+            "match": "\\b(true|false|null|Valid|Decayed|Pending|Consumed)\\b"
+        }
+    },
+    "scopeName": "source.ictl"
+}

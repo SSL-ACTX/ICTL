@@ -79,7 +79,7 @@ impl std::error::Error for SemanticError {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct BranchState {
+pub struct BranchState {
     pub consumed: HashSet<String>,
     pub decayed: HashSet<String>,
     pub yields: HashSet<String>,
@@ -96,16 +96,17 @@ pub struct RoutineInfo {
 }
 
 pub struct EntropicAnalyzer {
-    pub(crate) branch_contexts: HashMap<String, BranchState>,
-    pub(crate) current_branch: String,
-    pub(crate) current_statement: Option<String>,
-    pub(crate) current_span: Option<crate::frontend::ast::Span>,
+    pub branch_contexts: HashMap<String, BranchState>,
+    pub current_branch: String,
+    pub current_statement: Option<String>,
+    pub current_span: Option<crate::frontend::ast::Span>,
     pub(crate) inspection_depth: usize,
     pub(crate) current_slice_ms: Option<u64>,
-    pub(crate) source: Option<String>,
+    pub source: Option<String>,
     pub(crate) filename: Option<String>,
     pub(crate) capability_stack: Vec<HashSet<String>>,
     pub(crate) routines: HashMap<String, RoutineInfo>,
+    pub span_states: HashMap<Span, BranchState>,
 }
 
 impl EntropicAnalyzer {
@@ -124,6 +125,7 @@ impl EntropicAnalyzer {
             filename: None,
             capability_stack: Vec::new(),
             routines: HashMap::new(),
+            span_states: HashMap::new(),
         }
     }
 
@@ -200,7 +202,9 @@ impl EntropicAnalyzer {
                 let old_span = self.current_span.clone();
                 self.current_statement = Some(self.statement_snippet(stmt));
                 self.current_span = Some(stmt.span.clone());
+                self.current_span = Some(stmt.span.clone());
                 self.analyze_statement(stmt)?;
+                self.record_state(stmt.span.clone());
                 self.current_statement = old_stmt;
                 self.current_span = old_span;
             }
@@ -508,6 +512,12 @@ impl EntropicAnalyzer {
                     self.expr_snippet(right)
                 )
             }
+        }
+    }
+
+    pub fn record_state(&mut self, span: Span) {
+        if let Some(state) = self.branch_contexts.get(&self.current_branch) {
+            self.span_states.insert(span, state.clone());
         }
     }
 }
