@@ -4,6 +4,54 @@ use crate::frontend::parser::Rule;
 use pest::iterators::Pair;
 use std::collections::HashMap;
 
+fn parse_type_name(pair: Pair<Rule>) -> TypeName {
+    match pair.as_rule() {
+        Rule::type_name => {
+            let inner = pair.into_inner().next().unwrap();
+            parse_type_name(inner)
+        }
+        Rule::union_type => {
+            let mut parts = Vec::new();
+            for chunk in pair.into_inner() {
+                parts.push(parse_type_name(chunk));
+            }
+            if parts.len() == 1 {
+                parts.into_iter().next().unwrap()
+            } else {
+                TypeName::Union(parts)
+            }
+        }
+        Rule::optional_type => {
+            let mut inner = pair.into_inner();
+            let base = inner.next().unwrap();
+            let base_type = parse_type_name(base);
+            if let Some(opt) = inner.next() {
+                if opt.as_str() == "?" {
+                    TypeName::Optional(Box::new(base_type))
+                } else {
+                    base_type
+                }
+            } else {
+                base_type
+            }
+        }
+        Rule::base_type => {
+            let text = pair.as_str();
+            match text {
+                "int" => TypeName::Builtin(BuiltinType::Integer),
+                "bool" => TypeName::Builtin(BuiltinType::Bool),
+                "string" => TypeName::Builtin(BuiltinType::String),
+                "struct" => TypeName::Builtin(BuiltinType::Struct),
+                "topology" => TypeName::Builtin(BuiltinType::Topology),
+                "array" => TypeName::Builtin(BuiltinType::Array),
+                _ => TypeName::Custom(text.to_string()),
+            }
+        }
+        Rule::identifier => TypeName::Custom(pair.as_str().to_string()),
+        _ => TypeName::Custom(pair.as_str().to_string()),
+    }
+}
+
 pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
     let span = Span {
         start: pair.as_span().start(),
@@ -74,6 +122,7 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
             let mut params = Vec::new();
+            let mut return_type = None;
             let mut taking_ms: Option<u64> = None;
             let mut body = Vec::new();
 
@@ -82,17 +131,30 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                     Rule::param_decl_list => {
                         for p in current.into_inner() {
                             let mut decl = p.into_inner();
-                            if let (Some(mode), Some(param_name)) =
-                                (decl.next(), decl.next())
-                            {
-                                let mode = match mode.as_str() {
-                                    "consume" => ParamMode::Consume,
-                                    "clone" => ParamMode::Clone,
-                                    "decay" => ParamMode::Decay,
-                                    _ => ParamMode::Peek,
-                                };
-                                params.push((mode, param_name.as_str().to_string()));
+                            if let Some(mode) = decl.next() {
+                                if let Some(param_name) = decl.next() {
+                                    let param_type = decl
+                                        .next()
+                                        .and_then(|tp| tp.into_inner().next())
+                                        .map(parse_type_name);
+                                    let mode = match mode.as_str() {
+                                        "consume" => ParamMode::Consume,
+                                        "clone" => ParamMode::Clone,
+                                        "decay" => ParamMode::Decay,
+                                        _ => ParamMode::Peek,
+                                    };
+                                    params.push(ParamDecl {
+                                        mode,
+                                        name: param_name.as_str().to_string(),
+                                        typ: param_type,
+                                    });
+                                }
                             }
+                        }
+                    }
+                    Rule::return_annotation => {
+                        if let Some(typ) = current.into_inner().next() {
+                            return_type = Some(parse_type_name(typ));
                         }
                     }
                     Rule::amount => {
@@ -114,6 +176,7 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
             Statement::RoutineDef {
                 name,
                 params,
+                return_type,
                 taking_ms,
                 body,
             }
@@ -140,15 +203,7 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                     if let Some(type_name_pair) =
                         type_annotation_pair.into_inner().next()
                     {
-                        var_type = Some(match type_name_pair.as_str() {
-                            "int" => TypeName::Builtin(BuiltinType::Integer),
-                            "bool" => TypeName::Builtin(BuiltinType::Bool),
-                            "string" => TypeName::Builtin(BuiltinType::String),
-                            "struct" => TypeName::Builtin(BuiltinType::Struct),
-                            "topology" => TypeName::Builtin(BuiltinType::Topology),
-                            "array" => TypeName::Builtin(BuiltinType::Array),
-                            other => TypeName::Custom(other.to_string()),
-                        });
+                        var_type = Some(parse_type_name(type_name_pair));
                     }
                 }
             }
@@ -177,15 +232,7 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                     let mut kv = field_pair.into_inner();
                     if let (Some(id), Some(type_name_pair)) = (kv.next(), kv.next())
                     {
-                        let field_type = match type_name_pair.as_str() {
-                            "int" => TypeName::Builtin(BuiltinType::Integer),
-                            "bool" => TypeName::Builtin(BuiltinType::Bool),
-                            "string" => TypeName::Builtin(BuiltinType::String),
-                            "struct" => TypeName::Builtin(BuiltinType::Struct),
-                            "topology" => TypeName::Builtin(BuiltinType::Topology),
-                            "array" => TypeName::Builtin(BuiltinType::Array),
-                            other => TypeName::Custom(other.to_string()),
-                        };
+                        let field_type = parse_type_name(type_name_pair);
                         fields.insert(id.as_str().to_string(), field_type);
                     }
                 }

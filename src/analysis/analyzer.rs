@@ -88,6 +88,13 @@ pub(crate) struct BranchState {
     pub custom_types: HashMap<String, Type>,
 }
 
+#[derive(Clone, Debug)]
+pub struct RoutineInfo {
+    pub params: Vec<(crate::frontend::ast::ParamMode, String, Type)>,
+    pub return_type: Type,
+    pub taking_ms: u64,
+}
+
 pub struct EntropicAnalyzer {
     pub(crate) branch_contexts: HashMap<String, BranchState>,
     pub(crate) current_branch: String,
@@ -98,8 +105,7 @@ pub struct EntropicAnalyzer {
     pub(crate) source: Option<String>,
     pub(crate) filename: Option<String>,
     pub(crate) capability_stack: Vec<HashSet<String>>,
-    pub(crate) routines:
-        HashMap<String, (Vec<(crate::frontend::ast::ParamMode, String)>, u64)>,
+    pub(crate) routines: HashMap<String, RoutineInfo>,
 }
 
 impl EntropicAnalyzer {
@@ -277,8 +283,32 @@ impl EntropicAnalyzer {
                 Type::Topology(resolved_fields)
             }
             Type::Array(inner) => Type::Array(Box::new(self.resolve_type(inner))),
+            Type::Optional(inner) => Type::Optional(Box::new(self.resolve_type(inner))),
+            Type::Union(items) => Type::Union(items
+                .into_iter()
+                .map(|t| self.resolve_type(&t))
+                .collect()),
+            Type::Function { params, return_type } => Type::Function {
+                params: params
+                    .into_iter()
+                    .map(|p| self.resolve_type(&p))
+                    .collect(),
+                return_type: Box::new(self.resolve_type(&return_type)),
+            },
             _ => typ.clone(),
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn format_semantic_error(&self, err: &SemanticError) -> String {
+        let mut message = format!("{}", err.kind);
+        if let Some(line) = err.line {
+            message.push_str(&format!(" at {}:{}", line, err.column.unwrap_or(0)));
+        }
+        if let Some(stmt) = &err.statement {
+            message.push_str(&format!(" in statement: {}", stmt));
+        }
+        message
     }
 
     pub(crate) fn types_compatible(&self, expected: &Type, actual: &Type) -> bool {
@@ -309,6 +339,31 @@ impl EntropicAnalyzer {
             }
             (Type::Array(exp_inner), Type::Array(act_inner)) => {
                 self.types_compatible(&exp_inner, &act_inner)
+            }
+            (Type::Optional(exp_inner), Type::Optional(act_inner)) => {
+                self.types_compatible(&exp_inner, &act_inner)
+            }
+            (Type::Optional(exp_inner), act_ty) => {
+                // optional can accept inner type (nullable semantics)
+                self.types_compatible(&exp_inner, &act_ty)
+            }
+            (act_ty, Type::Optional(exp_inner)) => {
+                self.types_compatible(&act_ty, &exp_inner)
+            }
+            (Type::Union(exp_types), act_ty) => exp_types
+                .iter()
+                .any(|t| self.types_compatible(t, &act_ty)),
+            (act_ty, Type::Union(exp_types)) => exp_types
+                .iter()
+                .any(|t| self.types_compatible(&act_ty, t)),
+            (Type::Function { params: exp_params, return_type: exp_rt },
+             Type::Function { params: act_params, return_type: act_rt }) => {
+                exp_params.len() == act_params.len()
+                    && exp_params
+                        .iter()
+                        .zip(act_params.iter())
+                        .all(|(e, a)| self.types_compatible(e, a))
+                    && self.types_compatible(&exp_rt, &act_rt)
             }
             (Type::Custom(exp_name), Type::Custom(act_name)) => exp_name == act_name,
             (Type::Custom(_), _) => false,

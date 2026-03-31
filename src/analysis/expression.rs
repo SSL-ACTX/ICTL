@@ -50,7 +50,13 @@ pub(crate) fn infer_expression_type(
         }
         Expression::ChannelReceive(_) => Ok(Type::Unknown),
         Expression::Deferred { .. } => Ok(Type::Unknown),
-        Expression::Call { .. } => Ok(Type::Unknown),
+        Expression::Call { routine, .. } => {
+            if let Some(info) = analyzer.routines.get(routine) {
+                Ok(info.return_type.clone())
+            } else {
+                Ok(Type::Unknown)
+            }
+        },
         Expression::FieldAccess { target, field } => {
             let t = infer_expression_type(analyzer, target)?;
             let resolved_t = analyzer.resolve_type(&t);
@@ -131,42 +137,52 @@ pub(crate) fn analyze_expression(
     match expr {
         Expression::Null => Ok(()),
         Expression::Call { routine, args } => {
-            let (params, _taking_ms) = analyzer
+            let info = analyzer
                 .routines
                 .get(routine)
+                .cloned()
                 .ok_or_else(|| {
                     analyzer.annotate(SemanticErrorKind::EntropyMismatch(format!(
                         "unknown routine {}",
                         routine
                     )))
-                })?
-                .clone();
+                })?;
 
-            if args.len() != params.len() {
+            if args.len() != info.params.len() {
                 return Err(analyzer.annotate(SemanticErrorKind::EntropyMismatch(
                     format!(
                         "routine {} expects {} args, got {}",
                         routine,
-                        params.len(),
+                        info.params.len(),
                         args.len()
                     ),
                 )));
             }
 
-            for (arg_expr, (mode, _param_name)) in args.iter().zip(params.iter()) {
+            for (arg_expr, (mode, _param_name, expected_type)) in
+                args.iter().zip(info.params.iter())
+            {
+                let arg_type = infer_expression_type(analyzer, arg_expr)?;
+
+                if !analyzer.types_compatible(&expected_type, &arg_type) {
+                    return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
+                        format!(
+                            "routine {} arg type mismatch: expected {:?}, got {:?}",
+                            routine,
+                            expected_type,
+                            arg_type
+                        ),
+                    )));
+                }
+
                 analyze_expression_nonconsuming(analyzer, arg_expr)?;
 
                 match mode {
                     ParamMode::Consume => {
                         if let Expression::Identifier(name) = arg_expr {
                             analyzer.mark_consumed(name)?;
-                        } else {
-                            return Err(analyzer.annotate(
-                                SemanticErrorKind::EntropyMismatch(
-                                    "consume param must be identifier".into(),
-                                ),
-                            ));
                         }
+                        // non-identifiers are treated as value literals and do not consume existing variables
                     }
                     ParamMode::Clone => {
                         if let Expression::Identifier(name) = arg_expr {
@@ -306,8 +322,11 @@ pub(crate) fn estimate_expression_cost(
                 .iter()
                 .map(|a| estimate_expression_cost(analyzer, a))
                 .sum();
-            let taking_ms =
-                analyzer.routines.get(routine).map(|(_, t)| *t).unwrap_or(0);
+            let taking_ms = analyzer
+                .routines
+                .get(routine)
+                .map(|info| info.taking_ms)
+                .unwrap_or(0);
             arg_cost + taking_ms
         }
         Expression::BinaryOp { left, right, .. } => {

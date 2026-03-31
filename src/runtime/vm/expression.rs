@@ -373,7 +373,9 @@ impl Vm {
 
             let mut values: Vec<Option<Payload>> = Vec::new();
 
-            for (arg_expr, (mode, _param_name)) in args.iter().zip(params.iter()) {
+            for (arg_expr, (mode, _param_name, _param_type)) in
+                args.iter().zip(params.iter())
+            {
                 if let Expression::Identifier(var) = arg_expr {
                     let result = match mode {
                         ParamMode::Consume => {
@@ -434,7 +436,7 @@ impl Vm {
             Timeline::new(child_id.clone(), caller_capacity, self.global_clock);
         child.entropy_mode = caller_entropy_mode;
 
-        for ((_, param_name), val) in params.iter().zip(param_values) {
+        for ((_, param_name, _), val) in params.iter().zip(param_values) {
             child
                 .arena
                 .insert(param_name.clone(), EntropicState::Valid(val))?;

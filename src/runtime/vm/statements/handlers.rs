@@ -353,6 +353,7 @@ pub(crate) fn execute_statement_inner(
         Statement::RoutineDef {
             name,
             params,
+            return_type,
             taking_ms,
             body,
         } => {
@@ -361,7 +362,23 @@ pub(crate) fn execute_statement_inner(
             vm.routines.insert(
                 name.clone(),
                 Routine {
-                    params: params.clone(),
+                    params: params
+                        .iter()
+                        .map(|p| {
+                            (
+                                p.mode.clone(),
+                                p.name.clone(),
+                                p.typ
+                                    .as_ref()
+                                    .map(|t| crate::analysis::types::Type::from_typename(t))
+                                    .unwrap_or(crate::analysis::types::Type::Unknown),
+                            )
+                        })
+                        .collect(),
+                    return_type: return_type
+                        .as_ref()
+                        .map(|t| crate::analysis::types::Type::from_typename(t))
+                        .unwrap_or(crate::analysis::types::Type::Unknown),
                     taking_ms: Some(final_taking_ms),
                     body: body.clone(),
                 },

@@ -180,6 +180,35 @@ fn integration_type_decl_assignment_mismatch() -> anyhow::Result<()> {
 }
 
 #[test]
+fn integration_routine_param_return_types() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      routine add(consume a:int, consume b:int) -> int taking _ {
+        let sum = a + b
+        yield sum
+      }
+      let result:int = call add(10, 20)
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    for stmt in &program.timelines[0].statements {
+        vm.execute_statement("main", stmt)?;
+    }
+
+    let result_val = vm.root_timeline.arena.peek("result");
+    match result_val {
+        Some(Payload::Integer(v)) => assert_eq!(v, 30),
+        _ => panic!("Expected result=30"),
+    }
+    Ok(())
+}
+
+#[test]
 fn integration_inspect_block_does_not_consume() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {

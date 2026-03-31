@@ -39,6 +39,7 @@ Concurrency is achieved by `split`-ing the current timeline into independent bra
 - **Speculative Trials**: Execute sensitive logic in a `speculate` block with O(1) rollback on failure.
 - **Isochronous Scheduling**: Build real-time control loops with `loop tick` and double-buffered channel semantics.
 - **Paced Iteration**: Process data with strict `pacing` and temporal budgets.
+- **Static Type Declarations**: `type Point = struct { x:int, y:int }` with `let p: Point = struct { x = 1, y = 2 }` and structured `for` iteration.
 
 ---
 

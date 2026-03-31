@@ -1,5 +1,5 @@
 use crate::analysis::analyzer::{
-    BranchState, EntropicAnalyzer, SemanticError, SemanticErrorKind,
+    BranchState, EntropicAnalyzer, RoutineInfo, SemanticError, SemanticErrorKind,
 };
 use crate::analysis::expression::{
     analyze_expression, analyze_expression_nonconsuming, estimate_expression_cost,
@@ -266,6 +266,7 @@ pub(crate) fn analyze_statement(
         Statement::RoutineDef {
             name,
             params,
+            return_type,
             taking_ms,
             body,
         } => {
@@ -291,15 +292,32 @@ pub(crate) fn analyze_statement(
                 }
             }
 
-            let routine_state =
-                routine_analyzer.branch_contexts.get_mut("main").unwrap();
-            for (_mode, param_name) in params {
-                routine_state.yields.insert(param_name.clone());
+            for param in params {
+                let routine_state =
+                    routine_analyzer.branch_contexts.get_mut("main").unwrap();
+                routine_state.yields.insert(param.name.clone());
+                let _ = routine_state;
+
+                let param_type = param
+                    .typ
+                    .as_ref()
+                    .map(|t| crate::analysis::types::Type::from_typename(t))
+                    .unwrap_or(crate::analysis::types::Type::Unknown);
+                routine_analyzer.set_variable_type(&param.name, param_type);
             }
-            for (_mode, param_name) in params {
+
+            if let Some(rt) = return_type {
+                // store a placeholder for return type in analyzer state if needed
+                let routine_state = routine_analyzer
+                    .branch_contexts
+                    .get_mut("main")
+                    .unwrap();
+                routine_state.yields.insert("<return>".to_string());
+                let _ = routine_state;
+
                 routine_analyzer.set_variable_type(
-                    param_name,
-                    crate::analysis::types::Type::Unknown,
+                    "<return>",
+                    crate::analysis::types::Type::from_typename(&rt),
                 );
             }
 
@@ -323,9 +341,29 @@ pub(crate) fn analyze_statement(
                 estimated_cost
             };
 
-            analyzer
-                .routines
-                .insert(name.clone(), (params.clone(), final_taking_ms));
+            let routine_params = params
+                .iter()
+                .map(|p| {
+                    (
+                        p.mode.clone(),
+                        p.name.clone(),
+                        p.typ
+                            .as_ref()
+                            .map(|t| crate::analysis::types::Type::from_typename(t))
+                            .unwrap_or(crate::analysis::types::Type::Unknown),
+                    )
+                })
+                .collect();
+            let routine_info = RoutineInfo {
+                params: routine_params,
+                return_type: return_type
+                    .as_ref()
+                    .map(|t| crate::analysis::types::Type::from_typename(t))
+                    .unwrap_or(crate::analysis::types::Type::Unknown),
+                taking_ms: final_taking_ms,
+            };
+
+            analyzer.routines.insert(name.clone(), routine_info);
         }
         Statement::Assignment {
             target,

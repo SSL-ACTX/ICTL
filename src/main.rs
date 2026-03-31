@@ -104,7 +104,8 @@ fn main() -> anyhow::Result<()> {
             &source,
             &path.display().to_string(),
         ) {
-            eprintln!("{}", err);
+            let formatted = analyzer.format_semantic_error(&err);
+            eprintln!("error: {}", formatted);
             continue;
         }
 

@@ -45,6 +45,13 @@ pub enum SpeculationCommitMode {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamDecl {
+    pub mode: ParamMode,
+    pub name: String,
+    pub typ: Option<TypeName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
     Isolate(IsolateBlock),
     Split {
@@ -69,6 +76,7 @@ pub enum Statement {
         name: String,
         fields: HashMap<String, TypeName>,
     },
+    #[allow(dead_code)]
     Send {
         value_id: String,
         target_branch: String,
@@ -160,7 +168,8 @@ pub enum Statement {
     Debug(Expression),
     RoutineDef {
         name: String,
-        params: Vec<(ParamMode, String)>,
+        params: Vec<ParamDecl>,
+        return_type: Option<TypeName>,
         taking_ms: Option<u64>,
         body: Vec<SpannedStatement>,
     },
@@ -244,6 +253,8 @@ pub struct SelectCase {
 pub enum TypeName {
     Builtin(BuiltinType),
     Custom(String),
+    Optional(Box<TypeName>),
+    Union(Vec<TypeName>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

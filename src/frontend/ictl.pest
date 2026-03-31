@@ -58,10 +58,11 @@ fallback_stmt = { "fallback" ~ "{" ~ statement* ~ "}" }
 collapse_stmt = { "collapse" }
 speculation_mode_stmt = { "speculation_mode" ~ "(" ~ speculation_mode_value ~ ")" }
 speculation_mode_value = { "selective" | "full" }
-routine_stmt = { "routine" ~ identifier ~ "(" ~ param_decl_list? ~ ")" ~ "taking" ~ (amount ~ "ms" | "_") ~ "{" ~ statement* ~ "}" }
+routine_stmt = { "routine" ~ identifier ~ "(" ~ param_decl_list? ~ ")" ~ return_annotation? ~ "taking" ~ (amount ~ "ms" | "_") ~ "{" ~ statement* ~ "}" }
 param_decl_list = { param_decl ~ ("," ~ param_decl)* }
-param_decl = { param_mode ~ identifier }
+param_decl = { param_mode ~ identifier ~ type_annotation? }
 param_mode = { "consume" | "clone" | "decay" | "peek" }
+return_annotation = { "->" ~ type_name }
 
 select_stmt = { "select" ~ "(" ~ "max" ~ amount ~ "ms" ~ ")" ~ "{" ~ select_case* ~ timeout_clause? ~ "}" ~ reconcile_clause? }
 select_case = { "case" ~ identifier ~ "=" ~ expression ~ ":" ~ statement_block }
@@ -128,7 +129,10 @@ commit_stmt = { "commit" ~ "{" ~ statement* ~ "}" }
 assignment_stmt = { "let" ~ identifier ~ type_annotation? ~ "=" ~ expression }
 
 type_annotation = { ":" ~ type_name }
-type_name = { identifier | "int" | "bool" | "string" | "struct" | "topology" | "array" }
+type_name = { union_type }
+union_type = { optional_type ~ ("|" ~ optional_type)* }
+optional_type = { base_type ~ "?"? }
+base_type = { identifier | "int" | "bool" | "string" | "struct" | "topology" | "array" }
 
 open_chan_stmt = { "open_chan" ~ identifier ~ "(" ~ amount ~ ")" }
 chan_send_stmt = { "chan_send" ~ identifier ~ "(" ~ identifier ~ ")" }

@@ -271,26 +271,63 @@ fn lower_statement(stmt: &Statement) -> String {
         Statement::RoutineDef {
             name,
             params,
+            return_type,
             taking_ms,
             ..
         } => {
+            fn type_name_to_string(t: &crate::frontend::ast::TypeName) -> String {
+                match t {
+                    crate::frontend::ast::TypeName::Builtin(b) => match b {
+                        crate::frontend::ast::BuiltinType::Integer => "int".to_string(),
+                        crate::frontend::ast::BuiltinType::Bool => "bool".to_string(),
+                        crate::frontend::ast::BuiltinType::String => "string".to_string(),
+                        crate::frontend::ast::BuiltinType::Struct => "struct".to_string(),
+                        crate::frontend::ast::BuiltinType::Topology => "topology".to_string(),
+                        crate::frontend::ast::BuiltinType::Array => "array".to_string(),
+                    },
+                    crate::frontend::ast::TypeName::Custom(name) => name.clone(),
+                    crate::frontend::ast::TypeName::Optional(inner) => {
+                        format!("{}?", type_name_to_string(inner))
+                    }
+                    crate::frontend::ast::TypeName::Union(parts) => parts
+                        .iter()
+                        .map(|p| type_name_to_string(p))
+                        .collect::<Vec<_>>()
+                        .join("|")
+                }
+            }
+
             let params_txt: Vec<String> = params
                 .iter()
-                .map(|(mode, name)| {
-                    let mode_str = match mode {
+                .map(|param| {
+                    let mode_str = match param.mode {
                         crate::frontend::ast::ParamMode::Consume => "consume",
                         crate::frontend::ast::ParamMode::Clone => "clone",
                         crate::frontend::ast::ParamMode::Decay => "decay",
                         crate::frontend::ast::ParamMode::Peek => "peek",
                     };
-                    format!("{} {}", mode_str, name)
+                    let type_str = param
+                        .typ
+                        .as_ref()
+                        .map(|t| type_name_to_string(t))
+                        .unwrap_or_default();
+                    if type_str.is_empty() {
+                        format!("{} {}", mode_str, param.name)
+                    } else {
+                        format!("{} {}:{}", mode_str, param.name, type_str)
+                    }
                 })
                 .collect();
             let taking_display = taking_ms.unwrap_or(0);
+            let return_txt = return_type
+                .as_ref()
+                .map(|t| format!(" -> {}", type_name_to_string(t)))
+                .unwrap_or_default();
             format!(
-                "routine {}({}) taking {}ms {{ ... }}",
+                "routine {}({}){} taking {}ms {{ ... }}",
                 name,
                 params_txt.join(", "),
+                return_txt,
                 taking_display
             )
         }
