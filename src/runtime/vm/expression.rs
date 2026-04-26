@@ -298,19 +298,29 @@ impl Vm {
                 self.evaluate_array_literal(branch_id, elements, consuming)
             }
             Expression::ChannelReceive(chan_id) => {
-                let chan = self.channels.get_mut(chan_id).ok_or_else(|| {
-                    TemporalError::ChannelFault(format!(
-                        "Channel not found: {}",
-                        chan_id
-                    ))
-                })?;
-                let payload = chan.pop_front().ok_or_else(|| {
-                    TemporalError::ChannelFault(format!(
-                        "Channel empty: {}",
-                        chan_id
-                    ))
-                })?;
-                Ok(payload)
+                let message = {
+                    let chan = self.channels.get_mut(chan_id).ok_or_else(|| {
+                        TemporalError::ChannelFault(format!(
+                            "Channel not found: {}",
+                            chan_id
+                        ))
+                    })?;
+                    chan.pop_front().ok_or_else(|| {
+                        TemporalError::ChannelFault(format!(
+                            "Channel empty: {}",
+                            chan_id
+                        ))
+                    })?
+                };
+
+                // Record the event
+                self.causal_history.push(crate::runtime::vm::state::CausalEvent::ChannelRecv {
+                    branch_id: branch_id.to_string(),
+                    channel_id: chan_id.clone(),
+                    message: message.clone(),
+                });
+
+                Ok(message.payload)
             }
             Expression::Deferred { .. } => {
                 Ok(Payload::String("pending".to_string()))

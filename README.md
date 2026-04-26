@@ -76,10 +76,11 @@ cargo run -- --run examples/sample.ictl
 ```
 
 ### CLI Flags
-- `--check` : Perform static semantic analysis only.
-- `--run`   : Execute the program after analysis (default).
-- `--dump-ir` : Print the lowered intermediate representation.
-- `--dump-ast`: Print the raw abstract syntax tree.
+- `--check`          : Perform static semantic analysis only.
+- `--run`            : Execute the program after analysis (default).
+- `--dump-ir`        : Print the lowered intermediate representation.
+- `--dump-ast`       : Print the raw abstract syntax tree.
+- `--trace-entropy`  : Show a color-coded entropic "decay map" after every instruction.
 
 ---
 

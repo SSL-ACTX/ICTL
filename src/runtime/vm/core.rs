@@ -24,6 +24,9 @@ impl Vm {
             speculation_stack: Vec::new(),
             speculative_commit_mode: SpeculationCommitMode::Selective,
             entanglements: Vec::new(),
+            causal_history: Vec::new(),
+            next_payload_id: 0,
+            trace_entropy: false,
         }
     }
 
@@ -52,7 +55,24 @@ impl Vm {
             branch.local_clock += 1;
         }
 
-        self.execute_statement_inner(branch_id, stmt)
+        let result = self.execute_statement_inner(branch_id, stmt);
+
+        if self.trace_entropy {
+            println!("\x1b[1;30m--- Entropy Trace [{}] ---\x1b[0m", branch_id);
+            let branch = self.get_branch_mut(branch_id)?;
+            let mut keys: Vec<_> = branch.arena.bindings.keys().collect();
+            keys.sort();
+            for k in keys {
+                let state = &branch.arena.bindings[k];
+                println!(
+                    "  \x1b[1;33m{: <10}\x1b[0m: {}",
+                    k,
+                    state.render_decay(1)
+                );
+            }
+        }
+
+        result
     }
 
     pub(crate) fn execute_capability(
@@ -60,6 +80,21 @@ impl Vm {
         branch_id: &str,
         cap: &Capability,
     ) -> Result<(), TemporalError> {
+        // Enforce resource budgets
+        let res_name = cap.path.replace(".", "_").to_lowercase();
+        {
+            let branch = self.get_branch_mut(branch_id)?;
+            if let Some(budget) = branch.resource_budgets.get_mut(&res_name) {
+                if *budget == 0 {
+                    return Err(TemporalError::CapabilityViolation(format!(
+                        "Capability budget exhausted: {}",
+                        cap.path
+                    )));
+                }
+                *budget -= 1;
+            }
+        }
+
         if cap.path == "System.Entropy"
             && cap.parameters.get("mode") == Some(&"chaos".to_string())
         {
@@ -83,7 +118,7 @@ impl Vm {
         parent_id: &str,
         branches: Vec<&str>,
     ) -> Result<(), TemporalError> {
-        let (base_arena, cpu_budget_ms, entropy_mode) = {
+        let (base_arena, cpu_budget_ms, entropy_mode, resource_budgets) = {
             let parent_timeline = if parent_id == "main" {
                 &self.root_timeline
             } else {
@@ -95,6 +130,7 @@ impl Vm {
                 parent_timeline.arena.clone(),
                 parent_timeline.cpu_budget_ms,
                 parent_timeline.entropy_mode,
+                parent_timeline.resource_budgets.clone(),
             )
         };
 
@@ -109,6 +145,7 @@ impl Vm {
                 anchors: HashMap::new(),
                 commit_horizon_passed: false,
                 manifest_stack: Vec::new(),
+                resource_budgets: resource_budgets.clone(),
                 entropy_mode,
                 break_requested: false,
                 loop_depth: 0,
@@ -208,6 +245,8 @@ impl Vm {
         resolution: &MergeResolution,
     ) -> Result<(), TemporalError> {
         let mut merged_data: HashMap<String, EntropicState> = HashMap::new();
+        let mut pending_reversion = None;
+
         for branch_name in &branches {
             let branch =
                 self.active_branches.get(*branch_name).ok_or_else(|| {
@@ -219,7 +258,7 @@ impl Vm {
                         .rules
                         .get(key)
                         .unwrap_or(&ResolutionStrategy::FirstWins);
-                    let resolved = self.resolve_entropic_conflict(
+                    let (resolved, rev) = self.resolve_entropic_conflict(
                         key,
                         existing,
                         state,
@@ -227,11 +266,39 @@ impl Vm {
                         branch_name,
                     );
                     merged_data.insert(key.clone(), resolved);
+                    if pending_reversion.is_none() {
+                        pending_reversion = rev;
+                    }
                 } else {
                     merged_data.insert(key.clone(), state.clone());
                 }
             }
         }
+
+        if let Some(reversion) = pending_reversion {
+            // Trigger the reset!
+            // We use the same logic as Statement::AcausalReset
+            let anchor = {
+                let target_branch = self.get_branch_mut(&reversion.branch)?;
+                target_branch
+                    .anchors
+                    .get(&reversion.anchor)
+                    .ok_or_else(|| {
+                        TemporalError::AnchorNotFound(reversion.anchor.clone())
+                    })?
+                    .clone()
+            };
+
+            let target_branch = self.get_branch_mut(&reversion.branch)?;
+            target_branch.arena = anchor.arena_snapshot;
+            target_branch.local_clock = anchor.clock_snapshot;
+            target_branch.commit_horizon_passed = false;
+            
+            // In a more advanced VM we would restart the branch here.
+            // For now, we just perform the state reset.
+            return Ok(());
+        }
+
         let target_branch = self.get_branch_mut(target)?;
         for (k, v) in merged_data {
             target_branch.arena.insert(k, v)?;
@@ -289,20 +356,34 @@ impl Vm {
         incoming: &EntropicState,
         strategy: &ResolutionStrategy,
         incoming_branch: &str,
-    ) -> EntropicState {
+    ) -> (EntropicState, Option<crate::frontend::ast::CausalReversion>) {
+        // Causal safety: if either side is already Consumed, it stays Consumed
+        if matches!(existing, EntropicState::Consumed)
+            || matches!(incoming, EntropicState::Consumed)
+        {
+            return (EntropicState::Consumed, None);
+        }
+
         match strategy {
-            ResolutionStrategy::FirstWins => existing.clone(),
+            ResolutionStrategy::FirstWins => (existing.clone(), None),
             ResolutionStrategy::Priority(p) => {
                 if incoming_branch == p {
-                    incoming.clone()
+                    (incoming.clone(), None)
                 } else {
-                    existing.clone()
+                    (existing.clone(), None)
                 }
             }
-            ResolutionStrategy::Decay => EntropicState::Consumed,
-            ResolutionStrategy::Auto => existing.clone(),
+            ResolutionStrategy::Decay => (EntropicState::Consumed, None),
+            ResolutionStrategy::Auto => {
+                if existing == incoming {
+                    (existing.clone(), None)
+                } else {
+                    // Entropic collapse on conflict
+                    (EntropicState::Consumed, None)
+                }
+            }
             ResolutionStrategy::TopologyUnion {
-                key_rules, default, ..
+                key_rules, default, on_invalid,
             } => match (existing, incoming) {
                 (
                     EntropicState::Valid(Payload::Struct(e_fields))
@@ -313,10 +394,12 @@ impl Vm {
                     | EntropicState::Decayed(i_fields),
                 ) => {
                     let mut merged_fields = e_fields.clone();
+                    let mut triggered_reversion = None;
+
                     for (k, i_val) in i_fields {
                         if let Some(e_val) = merged_fields.get(k) {
                             let sub_strat = key_rules.get(k).unwrap_or(default);
-                            let resolved = self.resolve_entropic_conflict(
+                            let (resolved, rev) = self.resolve_entropic_conflict(
                                 k,
                                 e_val,
                                 i_val,
@@ -324,11 +407,15 @@ impl Vm {
                                 incoming_branch,
                             );
                             merged_fields.insert(k.clone(), resolved);
+                            if triggered_reversion.is_none() {
+                                triggered_reversion = rev;
+                            }
                         } else {
                             merged_fields.insert(k.clone(), i_val.clone());
                         }
                     }
-                    match (existing, incoming) {
+
+                    let final_state = match (existing, incoming) {
                         (EntropicState::Decayed(_), _)
                         | (_, EntropicState::Decayed(_)) => {
                             EntropicState::Decayed(merged_fields)
@@ -338,12 +425,19 @@ impl Vm {
                             EntropicState::Valid(Payload::Topology(merged_fields))
                         }
                         _ => EntropicState::Valid(Payload::Struct(merged_fields)),
+                    };
+
+                    // Check if we collapsed and have an on_invalid rule
+                    if matches!(final_state, EntropicState::Consumed) && triggered_reversion.is_none() {
+                        triggered_reversion = on_invalid.clone();
                     }
+
+                    (final_state, triggered_reversion)
                 }
-                _ => existing.clone(),
+                _ => (EntropicState::Consumed, on_invalid.clone()),
             },
             ResolutionStrategy::TopologyIntersect {
-                key_rules, default, ..
+                key_rules, default, on_invalid,
             } => match (existing, incoming) {
                 (
                     EntropicState::Valid(Payload::Struct(e_fields)),
@@ -354,10 +448,12 @@ impl Vm {
                     EntropicState::Valid(Payload::Topology(i_fields)),
                 ) => {
                     let mut merged_fields = HashMap::new();
+                    let mut triggered_reversion = None;
+
                     for (k, e_val) in e_fields {
                         if let Some(i_val) = i_fields.get(k) {
                             let sub_strat = key_rules.get(k).unwrap_or(default);
-                            let resolved = self.resolve_entropic_conflict(
+                            let (resolved, rev) = self.resolve_entropic_conflict(
                                 k,
                                 e_val,
                                 i_val,
@@ -365,19 +461,114 @@ impl Vm {
                                 incoming_branch,
                             );
                             merged_fields.insert(k.clone(), resolved);
+                            if triggered_reversion.is_none() {
+                                triggered_reversion = rev;
+                            }
                         }
                     }
-                    if matches!(existing, EntropicState::Valid(Payload::Topology(_)))
+
+                    let final_state = if matches!(existing, EntropicState::Valid(Payload::Topology(_)))
                     {
                         EntropicState::Valid(Payload::Topology(merged_fields))
                     } else {
                         EntropicState::Valid(Payload::Struct(merged_fields))
+                    };
+
+                    (final_state, triggered_reversion)
+                }
+                _ => (EntropicState::Consumed, on_invalid.clone()),
+            },
+            ResolutionStrategy::Custom(_) => (existing.clone(), None),
+        }
+    }
+
+    pub(crate) fn causal_rollback(
+        &mut self,
+        branch_id: &str,
+        start_index: usize,
+    ) -> Result<(), TemporalError> {
+        for i in (start_index..self.causal_history.len()).rev() {
+            let event = self.causal_history[i].clone();
+            match event {
+                crate::runtime::vm::state::CausalEvent::ChannelSend {
+                    branch_id: b_id,
+                    channel_id,
+                    payload_id,
+                } if b_id == branch_id => {
+                    let payload_id_val = payload_id;
+                    let channel_id_val = channel_id.clone();
+
+                    // Was this specific payload ever received by anyone?
+                    let was_received = self.causal_history.iter().skip(i + 1).any(|e| {
+                        matches!(e, crate::runtime::vm::state::CausalEvent::ChannelRecv { channel_id: c_id, message, .. } 
+                            if c_id == &channel_id_val && message.id == payload_id_val)
+                    });
+
+                    if was_received {
+                        return Err(TemporalError::Paradox);
+                    }
+
+                    // Attempt to un-send: remove from channel or pending_channels
+                    let mut found = false;
+                    if let Some(chan) = self.channels.get_mut(&channel_id_val) {
+                        if let Some(pos) =
+                            chan.iter().position(|m| m.id == payload_id_val)
+                        {
+                            chan.remove(pos);
+                            found = true;
+                        }
+                    }
+                    if !found {
+                        if let Some(pending) =
+                            self.pending_channels.get_mut(&channel_id_val)
+                        {
+                            if let Some(pos) =
+                                pending.iter().position(|m| m.id == payload_id_val)
+                            {
+                                pending.remove(pos);
+                                found = true;
+                            }
+                        }
+                    }
+
+                    if !found {
+                        return Err(TemporalError::Paradox);
                     }
                 }
-                _ => EntropicState::Consumed,
-            },
-            ResolutionStrategy::Custom(_) => existing.clone(),
+                crate::runtime::vm::state::CausalEvent::ChannelRecv {
+                    branch_id: b_id,
+                    channel_id,
+                    message,
+                } if b_id == branch_id => {
+                    // Undo receive by pushing back to front of channel
+                    if let Some(chan) = self.channels.get_mut(&channel_id) {
+                        chan.push_front(message.clone());
+                    } else {
+                        return Err(TemporalError::Paradox);
+                    }
+                }
+                crate::runtime::vm::state::CausalEvent::InterBranchMove {
+                    source_branch,
+                    target_branch,
+                    var_name,
+                    message: _,
+                } if source_branch == branch_id => {
+                    // Causal check: if target_branch still has var_name as Valid, we can pull it back
+                    let target = self.get_branch_mut(&target_branch)?;
+                    match target.arena.bindings.get(&var_name) {
+                        Some(EntropicState::Valid(_)) => {
+                            target.arena.bindings.remove(&var_name);
+                        }
+                        _ => {
+                            // Paradox: target branch already moved or decayed the variable
+                            return Err(TemporalError::Paradox);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
+        Ok(())
     }
 
     pub(crate) fn set_branch_state(&mut self, id: &str, state: Timeline) {
@@ -421,6 +612,7 @@ impl Timeline {
             anchors: HashMap::new(),
             commit_horizon_passed: false,
             manifest_stack: Vec::new(),
+            resource_budgets: HashMap::new(),
             entropy_mode: EntropyMode::Deterministic,
             break_requested: false,
             loop_depth: 0,

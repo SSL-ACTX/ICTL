@@ -31,6 +31,16 @@ pub enum TimeCoordinate {
     Branch(String),
 }
 
+impl std::fmt::Display for TimeCoordinate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TimeCoordinate::Global(t) => write!(f, "Global({})", t),
+            TimeCoordinate::Relative(t) => write!(f, "+{}ms", t),
+            TimeCoordinate::Branch(b) => write!(f, "{}", b),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntropyMode {
     Deterministic,
@@ -198,6 +208,7 @@ pub struct IsolateBlock {
 pub struct Manifest {
     pub cpu_budget_ms: Option<u64>,
     pub memory_budget_bytes: Option<u64>,
+    pub resource_budgets: HashMap<String, u64>,
     pub capabilities: Vec<Capability>,
     pub mode: Option<EntropyMode>,
 }

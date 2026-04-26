@@ -21,7 +21,7 @@ pub struct IrInstruction {
 impl std::fmt::Display for IrProgram {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for block in &self.blocks {
-            writeln!(f, "@{:?}:", block.time)?;
+            writeln!(f, "@{}:", block.time)?;
             for instr in &block.instructions {
                 let padding = " ".repeat(instr.indent);
                 let args = instr.args.join(" ");

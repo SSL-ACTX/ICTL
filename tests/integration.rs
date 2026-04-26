@@ -5,22 +5,29 @@ use ictl::runtime::vm::{TemporalError, Vm};
 
 #[test]
 fn integration_arena_insert_overwrite_reclaims_previous_memory() {
-    let mut arena = Arena::new(10);
+    let mut arena = Arena::new(200);
+    // Key "x" weight: 1 + 32 = 33
+    // Payload "abc" weight: 3 + 24 = 27
+    // EntropicState::Valid overhead: 16
+    // Total: 33 + 27 + 16 = 76
     assert!(arena
         .insert(
             "x".to_string(),
             EntropicState::Valid(Payload::String("abc".into()))
         )
         .is_ok());
-    assert_eq!(arena.used, 3);
+    assert_eq!(arena.used, 76);
 
+    // Payload "abcdefgh" weight: 8 + 24 = 32
+    // EntropicState::Valid overhead: 16
+    // Total: 33 + 32 + 16 = 81
     assert!(arena
         .insert(
             "x".to_string(),
             EntropicState::Valid(Payload::String("abcdefgh".into()))
         )
         .is_ok());
-    assert_eq!(arena.used, 8);
+    assert_eq!(arena.used, 81);
 }
 
 #[test]
@@ -1922,6 +1929,37 @@ fn integration_topology_routing() -> anyhow::Result<()> {
     match check2 {
         Some(Payload::String(s)) => assert_eq!(s, "online"),
         _ => panic!("Expected check2='online', got {:?}", check2),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn integration_capability_budget_enforcement() -> anyhow::Result<()> {
+    let source = r#"
+    @0ms: {
+      isolate limited {
+        require System.Log
+        enable system_log(1)
+        print("First")
+        print("Second")
+      }
+    }
+    "#;
+
+    let program = parser::parse_ictl(source)?;
+    let mut analyzer = EntropicAnalyzer::new();
+    analyzer.analyze_program(&program)?;
+
+    let mut vm = Vm::new();
+    vm.register_capability("System.Log", |_params| Ok(()));
+    
+    let result = vm.execute_statement("main", &program.timelines[0].statements[0]);
+    match result {
+        Err(TemporalError::CapabilityViolation(msg)) => {
+            assert!(msg.contains("Capability budget exhausted"));
+        },
+        other => panic!("Expected CapabilityViolation, got {:?}", other),
     }
 
     Ok(())

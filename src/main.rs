@@ -10,17 +10,23 @@ use std::path::PathBuf;
 
 fn usage(program: &str) {
     eprintln!(
-        "Usage: {} [--check] [--run] [--dump-ast] [--dump-ir] <file1.ictl> [file2.ictl ...]",
+        "Usage: {} [--check] [--run] [--dump-ast] [--dump-ir] [--trace-entropy] <file1.ictl> [file2.ictl ...]",
         program
     );
-    eprintln!("  --check     Perform semantic analysis only");
-    eprintln!("  --run       Execute program after analysis (default)");
-    eprintln!("  --dump-ast  Print the parsed AST and continue");
-    eprintln!("  --dump-ir   Print the lowered IR and continue");
+    eprintln!("  --check          Perform semantic analysis only");
+    eprintln!("  --run            Execute program after analysis (default)");
+    eprintln!("  --dump-ast       Print the parsed AST and continue");
+    eprintln!("  --dump-ir        Print the lowered IR and continue");
+    eprintln!("  --trace-entropy  Show entropic decay map after every instruction");
 }
 
 fn format_entropic_state(state: &runtime::memory::EntropicState) -> String {
-    format!("{:?}", state)
+    match state {
+        runtime::memory::EntropicState::Valid(p) => format!("{}", p),
+        runtime::memory::EntropicState::Decayed(_) => "<decayed>".to_string(),
+        runtime::memory::EntropicState::Pending(_) => "<pending>".to_string(),
+        runtime::memory::EntropicState::Consumed => "Consumed".to_string(),
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -34,6 +40,7 @@ fn main() -> anyhow::Result<()> {
     let mut run_program = false;
     let mut dump_ast = false;
     let mut dump_ir = false;
+    let mut trace_entropy = false;
 
     while let Some(arg) = args.first() {
         if arg == "--check" {
@@ -53,6 +60,11 @@ fn main() -> anyhow::Result<()> {
         }
         if arg == "--dump-ir" {
             dump_ir = true;
+            args.remove(0);
+            continue;
+        }
+        if arg == "--trace-entropy" {
+            trace_entropy = true;
             args.remove(0);
             continue;
         }
@@ -109,11 +121,17 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        println!("{}: analysis ok", path.display());
+        println!("\x1b[1;32m{}: analysis ok\x1b[0m", path.display());
 
         if run_program {
             let mut vm = runtime::vm::Vm::new();
-            vm.register_capability("System.Log", |_params| Ok(()));
+            vm.trace_entropy = trace_entropy;
+            vm.register_capability("System.Log", |params| {
+                if let Some(msg) = params.get("message") {
+                    println!("\x1b[1;34m[System.Log]\x1b[0m {}", msg);
+                }
+                Ok(())
+            });
 
             for timeline in &program.timelines {
                 let branch = match &timeline.time {
@@ -127,7 +145,7 @@ fn main() -> anyhow::Result<()> {
                 for stmt in &timeline.statements {
                     if let Err(e) = vm.execute_statement(branch, stmt) {
                         eprintln!(
-                            "error: runtime failure in {}\n  branch: {}\n  cause: {}",
+                            "\x1b[1;31merror: runtime failure in {}\x1b[0m\n  branch: {}\n  cause: {}",
                             path.display(), branch, e
                         );
                         break;
@@ -135,12 +153,18 @@ fn main() -> anyhow::Result<()> {
                 }
             }
 
-            println!("{}: run ok", path.display());
-            println!("  Global clock: {}", vm.global_clock);
-            println!("  Main local clock: {}", vm.root_timeline.local_clock);
-            println!("  Final arena state:");
-            for (name, state) in &vm.root_timeline.arena.bindings {
-                println!("    {} = {}", name, format_entropic_state(state));
+            println!("\x1b[1;32m{}: run ok\x1b[0m", path.display());
+            println!("\x1b[1;36m┌─ Execution Summary ──┐\x1b[0m");
+            println!("\x1b[1;36m│\x1b[0m Global clock:    {}", vm.global_clock);
+            println!("\x1b[1;36m│\x1b[0m Main local clock: {}", vm.root_timeline.local_clock);
+            println!("\x1b[1;36m│\x1b[0m Arena memory:    {}/{} bytes used", vm.root_timeline.arena.used, vm.root_timeline.arena.capacity);
+            println!("\x1b[1;36m└──────────────────────┘\x1b[0m");
+            println!("\x1b[1;35mFinal Arena State:\x1b[0m");
+            let mut keys: Vec<_> = vm.root_timeline.arena.bindings.keys().collect();
+            keys.sort();
+            for name in keys {
+                let state = &vm.root_timeline.arena.bindings[name];
+                println!("  \x1b[1;33m{: <10}\x1b[0m = {}", name, format_entropic_state(state));
             }
         }
     }

@@ -85,3 +85,13 @@ select (max <amount>ms) {
 - **Causal Racing**: The first branch to have its `source` become ready (e.g., a message arrived in a channel) wins.
 - **Deterministic Window**: If no branch completes within `max <amount>ms`, the `timeout` block is executed.
 - **Cost**: The cost is always `max + overhead`, ensuring deterministic timing regardless of which event won the race.
+
+---
+
+## 4. Speculative Rollback and Causal Safety
+
+The `speculate` block provides a sandbox for potentially failing operations.
+
+- **Isolation**: Changes within a `speculate` block are only committed if the block completes successfully and reaches a `commit` point.
+- **Surgical Rollback**: If a speculation fails or collapses, the VM performs a surgical rollback of all `Arena` changes and any causal effects (like channel operations) that occurred inside the block.
+- **Causal Consistency**: Similar to `rewind_to`, a speculation cannot be rolled back if it has already influenced an external timeline (e.g., a message sent during speculation was consumed by another branch). This prevents timeline corruption.

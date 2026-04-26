@@ -4,12 +4,42 @@ use std::collections::{HashMap, VecDeque};
 
 pub type CapHandler = Box<dyn Fn(&HashMap<String, String>) -> Result<(), String>>;
 
+#[derive(Debug, Clone)]
+pub struct Message {
+    pub id: u64,
+    #[allow(dead_code)]
+    pub sender: String,
+    pub payload: Payload,
+}
+
+#[derive(Debug, Clone)]
+pub enum CausalEvent {
+    ChannelSend {
+        branch_id: String,
+        channel_id: String,
+        payload_id: u64,
+    },
+    ChannelRecv {
+        branch_id: String,
+        channel_id: String,
+        message: Message,
+    },
+    InterBranchMove {
+        source_branch: String,
+        target_branch: String,
+        var_name: String,
+        #[allow(dead_code)]
+        message: Message,
+    },
+}
+
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct AnchorPoint {
     pub name: String,
     pub clock_snapshot: u64,
     pub arena_snapshot: Arena,
+    pub history_index: usize,
 }
 
 #[derive(Clone)]
@@ -35,11 +65,14 @@ pub struct Vm {
     pub root_timeline: Timeline,
     pub active_branches: HashMap<String, Timeline>,
     pub capability_handlers: HashMap<String, CapHandler>,
-    pub channels: HashMap<String, VecDeque<Payload>>,
-    pub pending_channels: HashMap<String, VecDeque<Payload>>,
+    pub channels: HashMap<String, VecDeque<Message>>,
+    pub pending_channels: HashMap<String, VecDeque<Message>>,
     pub routines: HashMap<String, Routine>,
     pub(crate) speculation_stack: Vec<SpeculationContext>,
     pub entanglements: Vec<std::collections::HashSet<(String, String)>>,
+    pub causal_history: Vec<CausalEvent>,
+    pub next_payload_id: u64,
+    pub trace_entropy: bool,
 }
 
 #[derive(Clone)]
@@ -54,6 +87,7 @@ pub struct Timeline {
     pub anchors: HashMap<String, AnchorPoint>,
     pub commit_horizon_passed: bool,
     pub manifest_stack: Vec<Manifest>,
+    pub resource_budgets: HashMap<String, u64>,
     pub entropy_mode: crate::frontend::ast::EntropyMode,
     pub break_requested: bool,
     pub loop_depth: u32,

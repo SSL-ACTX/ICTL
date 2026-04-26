@@ -24,21 +24,30 @@ Each branch maintains an `Arena` with a fixed `capacity` and a tracking counter 
 | **`used`**     | The current sum of weights of all `Valid` payloads in the arena.      |
 
 ### Weight Calculation
-Payload weights are calculated deterministically:
-- **Integer**: 8 bytes.
-- **String**: Length of the string in bytes.
-- **Struct**: Sum of field weights + 16 bytes overhead.
-- **Array**: Sum of element weights + 16 bytes overhead.
+Payload weights are calculated with sub-kilobyte precision:
+- **Integer / Null**: 8 bytes.
+- **String**: Length + 24 bytes overhead (Rust struct + pointer).
+- **Struct**: Sum of field weights + 48 bytes (HashMap overhead).
+- **Topology**: Sum of field weights + 64 bytes.
+- **Array**: Sum of element weights + 24 bytes (Vec overhead).
+
+**Entropic State Overhead**:
+- **Valid(p)**: `weight(p)` + 16 bytes.
+- **Decayed(f)**: `weight(fields)` + 32 bytes.
+- **Consumed**: 8 bytes (placeholder marker).
+
+**Binding Overhead**:
+Variable names (keys) themselves consume memory: `len(key)` + 32 bytes (HashMap node overhead).
 
 ---
 
 ## 3. Reclamation Lifecycle
 
 ### Continuous Reclamation
-Memory is reclaimed immediately during:
-- **Consumption**: `let x = y` frees the memory previously used by `y` and reallocates it to `x`.
-- **Field Extraction**: Accessing `s.f` frees the weight of field `f` while keeping the rest of struct `s` (now `Decayed`).
-- **Reassignment**: Overwriting an existing variable (`let x = ...`) frees the weight of the previous value.
+Memory is tracked at a granular level:
+- **Consumption**: Assigning a value (`let x = y`) marks `y` as `Consumed`. Its memory is not fully freed until a `compact_consumed()` occurs; however, its footprint is reduced to 8 bytes.
+- **Field Extraction**: Accessing `s.f` consumes `f` and transitions `s` to `Decayed`. The arena weight is updated to reflect the new state of the parent.
+- **Reassignment**: Overwriting an existing variable reclaims the weight of the previous state and key before allocating the new one.
 
 ### Lifecycle Events
 - **Branch Termination**: When a branch is merged or explicitly terminated, the VM invokes `GarbageCollector::collect_branch`, clearing all associated bindings and snapshots.

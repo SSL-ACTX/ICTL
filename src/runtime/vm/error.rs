@@ -35,6 +35,8 @@ pub enum TemporalError {
     PacingViolation,
     #[error("Invalid loop budget: max must be >0")]
     InvalidLoopBudget,
+    #[error("Causal Paradox: Attempted to rewind past an irreversible global effect (e.g., consumed channel send)")]
+    Paradox,
     #[error("Speculation collapsed or failed")]
     SpeculationCollapsed,
 }

@@ -994,10 +994,28 @@ fn parse_manifest(pair: Pair<Rule>) -> Manifest {
                     .next()
                     .map(|p| p.as_str().parse::<u64>().unwrap_or(0))
                     .unwrap_or(0);
+                let unit = inner.next().map(|p| p.as_str());
+
                 match res_type {
-                    "cpu" => manifest.cpu_budget_ms = Some(amount),
-                    "memory" => manifest.memory_budget_bytes = Some(amount),
-                    _ => {}
+                    "cpu" => {
+                        let multiplier = match unit {
+                            Some("ms") => 1,
+                            _ => 1,
+                        };
+                        manifest.cpu_budget_ms = Some(amount * multiplier);
+                    }
+                    "memory" => {
+                        let multiplier = match unit {
+                            Some("KB") => 1024,
+                            Some("MB") => 1024 * 1024,
+                            Some("bytes") => 1,
+                            _ => 1,
+                        };
+                        manifest.memory_budget_bytes = Some(amount * multiplier);
+                    }
+                    _ => {
+                        manifest.resource_budgets.insert(res_type.to_string(), amount);
+                    }
                 }
             }
             Rule::slice_decl => {

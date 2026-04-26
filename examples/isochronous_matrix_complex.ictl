@@ -1,7 +1,8 @@
 @0ms: {
   isolate hft_pipeline {
-    enable System.Log
-    enable memory(50KB)
+    require System.Log
+    enable system_log(1)
+    enable memory(5KB)
     slice 20ms
     open_chan signal_bus(8)
 

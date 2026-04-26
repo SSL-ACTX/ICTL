@@ -53,3 +53,19 @@ For high-precision timing, ICTL supports **Isochronous Matrix** scheduling.
 
 - **Slices**: Using `slice Nms` sets a fixed tick rate.
 - **Phase Commits**: `loop tick` blocks ensure that all channel operations happen in deterministic phases—sends are buffered until the tick boundary, and receives read from the previous tick's buffer.
+
+---
+
+## 5. Causal Reversion and Paradoxes
+
+ICTL provides high-assurance recovery through `anchor` and `rewind_to`.
+
+### Temporal Integrity
+- **Clock Restoration**: Rewinding to an anchor restores the branch to the exact `local_clock` of that anchor.
+- **State Restoration**: The `Arena` is rolled back to the exact snapshot taken at the anchor point.
+
+### Paradox Prevention
+To maintain consistent timelines, the VM prevents **Paradoxical Rewinds**:
+1. **Unconsumed Side Effects**: A branch can rewind past a `chan_send` only if the message has not yet been received by another branch. The VM automatically "un-sends" the message.
+2. **Causal Outflow**: If a message was sent and already consumed by another branch, the source branch is "causally locked" to that event. Attempting to rewind past it triggers a `Causal Paradox` error.
+3. **Automatic Receive Undo**: If a branch rewinds past a `chan_recv`, the message is automatically returned to the front of the channel to preserve data integrity.

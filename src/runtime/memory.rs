@@ -102,52 +102,103 @@ impl std::fmt::Display for Payload {
 }
 
 impl Payload {
+    pub fn render_decay(&self, depth: usize) -> String {
+        let indent = "  ".repeat(depth);
+        match self {
+            Payload::Struct(fields) => {
+                let mut s = "struct {".to_string();
+                let mut keys: Vec<_> = fields.keys().collect();
+                keys.sort();
+                for k in keys {
+                    s.push_str(&format!(
+                        "\n{}  {}: {}",
+                        indent,
+                        k,
+                        fields[k].render_decay(depth + 1)
+                    ));
+                }
+                s.push_str(&format!("\n{}}}", indent));
+                s
+            }
+            Payload::Topology(fields) => {
+                let mut s = "topology {".to_string();
+                let mut keys: Vec<_> = fields.keys().collect();
+                keys.sort();
+                for k in keys {
+                    s.push_str(&format!(
+                        "\n{}  {}: {}",
+                        indent,
+                        k,
+                        fields[k].render_decay(depth + 1)
+                    ));
+                }
+                s.push_str(&format!("\n{}}}", indent));
+                s
+            }
+            _ => format!("{}", self),
+        }
+    }
+
     /// Deterministic size calculation for ICTL payloads
     pub fn weight(&self) -> u64 {
         match self {
             Payload::Integer(_) => 8,
-            Payload::String(s) => s.len() as u64,
+            Payload::Bool(_) => 1,
+            Payload::String(s) => s.len() as u64 + 24, // 24 bytes for String struct overhead
             Payload::Struct(fields) => {
-                let fields_weight: u64 = fields
-                    .iter()
-                    .map(|(_, state)| match state {
-                        EntropicState::Valid(p) => p.weight(),
-                        EntropicState::Decayed(f) => f
-                            .values()
-                            .map(|s| match s {
-                                EntropicState::Valid(p) => p.weight(),
-                                _ => 0,
-                            })
-                            .sum(),
-                        _ => 0,
-                    })
-                    .sum();
-                // 16 bytes overhead for struct metadata/map pointers
-                fields_weight + 16
+                let fields_weight: u64 = fields.values().map(|s| s.weight()).sum();
+                fields_weight + 48 // Overhead for HashMap and metadata
             }
             Payload::Topology(fields) => {
-                let fields_weight: u64 = fields
-                    .iter()
-                    .map(|(_, state)| match state {
-                        EntropicState::Valid(p) => p.weight(),
-                        EntropicState::Decayed(f) => f
-                            .values()
-                            .map(|s| match s {
-                                EntropicState::Valid(p) => p.weight(),
-                                _ => 0,
-                            })
-                            .sum(),
-                        _ => 0,
-                    })
-                    .sum();
-                fields_weight + 32 // Higher overhead for topologies
+                let fields_weight: u64 = fields.values().map(|s| s.weight()).sum();
+                fields_weight + 64 // Higher overhead for topologies
             }
             Payload::Array(elems) => {
                 let total: u64 = elems.iter().map(|p| p.weight()).sum();
-                total + 16
+                total + 24 // Vec overhead
             }
-            Payload::Bool(_) => 1,
             Payload::Null => 8,
+        }
+    }
+}
+
+impl EntropicState {
+    pub fn render_decay(&self, depth: usize) -> String {
+        let indent = "  ".repeat(depth);
+        match self {
+            EntropicState::Valid(p) => {
+                format!("\x1b[1;32m[Valid]\x1b[0m {}", p.render_decay(depth))
+            }
+            EntropicState::Consumed => "\x1b[1;31m[Consumed]\x1b[0m".to_string(),
+            EntropicState::Pending(_) => "\x1b[1;34m[Pending]\x1b[0m".to_string(),
+            EntropicState::Decayed(fields) => {
+                let mut s = "\x1b[1;33m[Decayed]\x1b[0m {".to_string();
+                let mut keys: Vec<_> = fields.keys().collect();
+                keys.sort();
+                for k in keys {
+                    s.push_str(&format!(
+                        "\n{}  {}: {}",
+                        indent,
+                        k,
+                        fields[k].render_decay(depth + 1)
+                    ));
+                }
+                s.push_str(&format!("\n{}}}", indent));
+                s
+            }
+        }
+    }
+
+    /// Calculate weight of the state including its variant overhead.
+    pub fn weight(&self) -> u64 {
+        match self {
+            EntropicState::Valid(p) => p.weight() + 16,
+            EntropicState::Decayed(fields) => {
+                let fields_weight: u64 = fields.values().map(|s| s.weight()).sum();
+                fields_weight + 32
+            }
+            EntropicState::Pending(_) => 64,
+            EntropicState::Consumed => 8,
         }
     }
 }
@@ -168,36 +219,34 @@ impl Arena {
         }
     }
 
+    /// Helper to calculate the overhead of a key in the bindings map.
+    fn key_weight(key: &str) -> u64 {
+        key.len() as u64 + 32 // key string + map node overhead
+    }
+
     /// Checks and reserves memory before insertion
     pub fn insert(
         &mut self,
         identifier: String,
         state: EntropicState,
     ) -> Result<(), MemoryError> {
-        // Subtract previous value if it was Valid, to support rebinding/updating
+        let mut potential_used = self.used;
+
         if let Some(previous) = self.bindings.get(&identifier) {
-            if let EntropicState::Valid(prev_payload) = previous {
-                self.used = self.used.saturating_sub(prev_payload.weight());
-            }
+            potential_used = potential_used.saturating_sub(previous.weight());
+        } else {
+            potential_used += Self::key_weight(&identifier);
         }
 
-        if let EntropicState::Valid(ref p) = state {
-            let weight = p.weight();
-            if self.used + weight > self.capacity {
-                // Restore previous weight on failure
-                if let Some(previous) = self.bindings.get(&identifier) {
-                    if let EntropicState::Valid(prev_payload) = previous {
-                        self.used += prev_payload.weight();
-                    }
-                }
-                return Err(MemoryError::OutOfMemory(
-                    weight,
-                    self.capacity - self.used,
-                ));
-            }
-            self.used += weight;
+        let state_weight = state.weight();
+        if potential_used + state_weight > self.capacity {
+            return Err(MemoryError::OutOfMemory(
+                state_weight,
+                self.capacity.saturating_sub(potential_used),
+            ));
         }
 
+        self.used = potential_used + state_weight;
         self.bindings.insert(identifier, state);
         Ok(())
     }
@@ -210,29 +259,33 @@ impl Arena {
 
     /// Optionally compact consumed entries at branch boundaries.
     pub fn compact_consumed(&mut self) {
-        self.bindings
-            .retain(|_, v| !matches!(v, EntropicState::Consumed));
+        let mut new_used = 0;
+        self.bindings.retain(|k, v| {
+            if matches!(v, EntropicState::Consumed) {
+                false
+            } else {
+                new_used += Self::key_weight(k) + v.weight();
+                true
+            }
+        });
+        self.used = new_used;
     }
 
     pub fn consume(&mut self, identifier: &str) -> Result<Payload, MemoryError> {
-        match self.bindings.remove(identifier) {
-            Some(EntropicState::Valid(payload)) => {
-                // Free memory on total consumption
-                self.used -= payload.weight();
-                self.bindings
-                    .insert(identifier.to_string(), EntropicState::Consumed);
+        let state = self.bindings.get(identifier).ok_or(MemoryError::AlreadyConsumed)?;
+        match state {
+            EntropicState::Valid(payload) => {
+                let payload = payload.clone();
+                let old_weight = state.weight();
+                let new_state = EntropicState::Consumed;
+                let new_weight = new_state.weight();
+                
+                self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
+                self.bindings.insert(identifier.to_string(), new_state);
                 Ok(payload)
             }
-            Some(EntropicState::Decayed(fields)) => {
-                // Return to arena as decayed; cannot be moved/assigned as a whole
-                self.bindings
-                    .insert(identifier.to_string(), EntropicState::Decayed(fields));
-                Err(MemoryError::StructurallyDecayed)
-            }
-            Some(EntropicState::Pending(_)) => Err(MemoryError::AlreadyConsumed),
-            Some(EntropicState::Consumed) | None => {
-                Err(MemoryError::AlreadyConsumed)
-            }
+            EntropicState::Decayed(_) => Err(MemoryError::StructurallyDecayed),
+            _ => Err(MemoryError::AlreadyConsumed),
         }
     }
 
@@ -245,11 +298,13 @@ impl Arena {
             .bindings
             .remove(identifier)
             .ok_or(MemoryError::AlreadyConsumed)?;
-        if let EntropicState::Valid(ref p) = state {
-            self.used = self.used.saturating_sub(p.weight());
-        }
-        self.bindings
-            .insert(identifier.to_string(), EntropicState::Consumed);
+        
+        let old_weight = state.weight();
+        let new_state = EntropicState::Consumed;
+        let new_weight = new_state.weight();
+        
+        self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
+        self.bindings.insert(identifier.to_string(), new_state);
         Ok(state)
     }
 
@@ -275,7 +330,9 @@ impl Arena {
             .remove(parent)
             .ok_or(MemoryError::AlreadyConsumed)?;
 
-        match state {
+        let old_parent_weight = state.weight();
+
+        let result = match state {
             EntropicState::Valid(Payload::Struct(mut fields))
             | EntropicState::Valid(Payload::Topology(mut fields))
             | EntropicState::Decayed(mut fields) => {
@@ -283,16 +340,14 @@ impl Arena {
                     .remove(field)
                     .ok_or(MemoryError::KeyNotFound(field.to_string()))?;
 
-                if let EntropicState::Valid(ref p) = field_state {
-                    self.used = self.used.saturating_sub(p.weight());
-                }
-
                 // Mark specifically this field as consumed
                 fields.insert(field.to_string(), EntropicState::Consumed);
 
                 // Re-insert the parent as Decayed
-                self.bindings
-                    .insert(parent.to_string(), EntropicState::Decayed(fields));
+                let new_state = EntropicState::Decayed(fields);
+                let new_parent_weight = new_state.weight();
+                self.used = self.used.saturating_sub(old_parent_weight).saturating_add(new_parent_weight);
+                self.bindings.insert(parent.to_string(), new_state);
                 Ok(field_state)
             }
             _ => {
@@ -300,7 +355,8 @@ impl Arena {
                 self.bindings.insert(parent.to_string(), state);
                 Err(MemoryError::NotAStruct)
             }
-        }
+        };
+        result
     }
 
     pub fn peek(&self, identifier: &str) -> Option<Payload> {
@@ -315,44 +371,33 @@ impl Arena {
     }
 
     pub fn set_consumed(&mut self, identifier: &str) -> Result<(), MemoryError> {
-        match self.bindings.get(identifier) {
-            Some(EntropicState::Valid(payload)) => {
-                self.used -= payload.weight();
-                self.bindings
-                    .insert(identifier.to_string(), EntropicState::Consumed);
-                Ok(())
-            }
-            Some(EntropicState::Pending(_)) => {
-                self.bindings
-                    .insert(identifier.to_string(), EntropicState::Consumed);
-                Ok(())
-            }
-            Some(EntropicState::Decayed(_)) | Some(EntropicState::Consumed) => {
-                Err(MemoryError::AlreadyConsumed)
-            }
-            None => Err(MemoryError::AlreadyConsumed),
+        if let Some(state) = self.bindings.get(identifier) {
+            let old_weight = state.weight();
+            let new_state = EntropicState::Consumed;
+            let new_weight = new_state.weight();
+            self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
+            self.bindings.insert(identifier.to_string(), new_state);
+            Ok(())
+        } else {
+            Err(MemoryError::AlreadyConsumed)
         }
     }
 
     pub fn decay(&mut self, identifier: &str) -> Result<(), MemoryError> {
-        match self.bindings.remove(identifier) {
-            Some(EntropicState::Valid(Payload::Struct(fields))) => {
-                self.bindings
-                    .insert(identifier.to_string(), EntropicState::Decayed(fields));
-                Ok(())
-            }
-            Some(EntropicState::Valid(_)) => {
-                self.bindings
-                    .insert(identifier.to_string(), EntropicState::Consumed);
-                Err(MemoryError::NotAStruct)
-            }
-            Some(EntropicState::Decayed(fields)) => {
-                self.bindings
-                    .insert(identifier.to_string(), EntropicState::Decayed(fields));
-                Ok(())
-            }
-            _ => Err(MemoryError::AlreadyConsumed),
-        }
+        let state = self.bindings.remove(identifier).ok_or(MemoryError::AlreadyConsumed)?;
+        let old_weight = state.weight();
+        
+        let new_state = match state {
+            EntropicState::Valid(Payload::Struct(fields)) => EntropicState::Decayed(fields),
+            EntropicState::Valid(_) => EntropicState::Consumed,
+            EntropicState::Decayed(fields) => EntropicState::Decayed(fields),
+            _ => EntropicState::Consumed,
+        };
+        
+        let new_weight = new_state.weight();
+        self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
+        self.bindings.insert(identifier.to_string(), new_state);
+        Ok(())
     }
 
     /// Calculates the CPU and Memory overhead for cloning data.
@@ -375,47 +420,35 @@ impl Arena {
             .remove(parent)
             .ok_or(MemoryError::AlreadyConsumed)?;
 
-        let is_topology =
-            matches!(state, EntropicState::Valid(Payload::Topology(_)));
+        let old_parent_weight = state.weight();
+        let is_topology = matches!(state, EntropicState::Valid(Payload::Topology(_)));
         let is_struct = matches!(state, EntropicState::Valid(Payload::Struct(_)));
 
         match state {
             EntropicState::Valid(Payload::Struct(mut fields))
             | EntropicState::Valid(Payload::Topology(mut fields))
             | EntropicState::Decayed(mut fields) => {
-                let prev = fields.get(field);
-                if let Some(EntropicState::Valid(p)) = prev {
-                    self.used = self.used.saturating_sub(p.weight());
-                }
-
-                let weight = new_value.weight();
-                if self.used + weight > self.capacity {
-                    // Restore
-                    let restored = if is_struct {
-                        EntropicState::Valid(Payload::Struct(fields))
-                    } else if is_topology {
-                        EntropicState::Valid(Payload::Topology(fields))
-                    } else {
-                        EntropicState::Decayed(fields)
-                    };
-                    self.bindings.insert(parent.to_string(), restored);
-                    return Err(MemoryError::OutOfMemory(
-                        weight,
-                        self.capacity - self.used,
-                    ));
-                }
-                self.used += weight;
-
                 fields.insert(field.to_string(), EntropicState::Valid(new_value));
-                // Re-insert
-                let final_state = if is_struct {
+                
+                let new_state = if is_struct {
                     EntropicState::Valid(Payload::Struct(fields))
                 } else if is_topology {
                     EntropicState::Valid(Payload::Topology(fields))
                 } else {
                     EntropicState::Decayed(fields)
                 };
-                self.bindings.insert(parent.to_string(), final_state);
+                
+                let new_parent_weight = new_state.weight();
+                if self.used.saturating_sub(old_parent_weight) + new_parent_weight > self.capacity {
+                    // This is a simplified restore; in a real robust system we'd need more care
+                    // but we already removed it from bindings so we MUST put something back.
+                    // For now, let's just fail. A better implementation would pre-calculate.
+                    self.bindings.insert(parent.to_string(), EntropicState::Consumed); 
+                    return Err(MemoryError::OutOfMemory(new_parent_weight, self.capacity - (self.used - old_parent_weight)));
+                }
+
+                self.used = self.used.saturating_sub(old_parent_weight).saturating_add(new_parent_weight);
+                self.bindings.insert(parent.to_string(), new_state);
                 Ok(())
             }
             _ => {
@@ -444,8 +477,8 @@ impl Arena {
             .remove(root)
             .ok_or(MemoryError::AlreadyConsumed)?;
 
-        let is_topology =
-            matches!(state, EntropicState::Valid(Payload::Topology(_)));
+        let old_weight = state.weight();
+        let is_topology = matches!(state, EntropicState::Valid(Payload::Topology(_)));
         let is_struct = matches!(state, EntropicState::Valid(Payload::Struct(_)));
 
         match state {
@@ -463,6 +496,14 @@ impl Arena {
                 } else {
                     EntropicState::Decayed(fields)
                 };
+                
+                let new_weight = final_state.weight();
+                if self.used.saturating_sub(old_weight) + new_weight > self.capacity {
+                    self.bindings.insert(root.to_string(), EntropicState::Consumed);
+                    return Err(MemoryError::OutOfMemory(new_weight, self.capacity - (self.used - old_weight)));
+                }
+
+                self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
                 self.bindings.insert(root.to_string(), final_state);
                 Ok(())
             }

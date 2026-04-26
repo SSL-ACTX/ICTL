@@ -24,7 +24,9 @@ fn integration_topographical_merge_union() -> Result<(), Box<dyn std::error::Err
         }
         
         @beta: {
-            let dead_core = graph["core"]
+            inspect(graph) {
+                let dead_core = graph["core"]
+            }
         }
     }
 
