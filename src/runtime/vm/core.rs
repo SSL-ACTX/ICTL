@@ -288,6 +288,8 @@ impl Vm {
             let target_branch = self.get_branch_mut(&reversion.branch)?;
             target_branch.arena = anchor.arena_snapshot;
             target_branch.local_clock = anchor.clock_snapshot;
+            target_branch.cpu_budget_ms = anchor.cpu_budget_snapshot;
+            target_branch.resource_budgets = anchor.resource_budgets_snapshot;
             target_branch.commit_horizon_passed = false;
 
             // In a more advanced VM we would restart the branch here.

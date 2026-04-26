@@ -39,6 +39,8 @@ pub struct AnchorPoint {
     pub name: String,
     pub clock_snapshot: u64,
     pub arena_snapshot: Arena,
+    pub cpu_budget_snapshot: u64,
+    pub resource_budgets_snapshot: HashMap<String, u64>,
     pub history_index: usize,
 }
 

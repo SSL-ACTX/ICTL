@@ -207,6 +207,8 @@ pub(crate) fn execute_statement_inner(
             let target_branch = vm.get_branch_mut(target)?;
             target_branch.arena = anchor.arena_snapshot;
             target_branch.local_clock = anchor.clock_snapshot;
+            target_branch.cpu_budget_ms = anchor.cpu_budget_snapshot;
+            target_branch.resource_budgets = anchor.resource_budgets_snapshot;
             target_branch.commit_horizon_passed = false;
         }
         Statement::Inspect { target: _, body } => {
@@ -501,6 +503,8 @@ pub(crate) fn execute_statement_inner(
                 name: name.clone(),
                 clock_snapshot: branch.local_clock,
                 arena_snapshot: branch.arena.clone(),
+                cpu_budget_snapshot: branch.cpu_budget_ms,
+                resource_budgets_snapshot: branch.resource_budgets.clone(),
                 history_index,
             };
             branch.anchors.insert(name.clone(), snapshot);
@@ -528,6 +532,8 @@ pub(crate) fn execute_statement_inner(
             let branch = vm.get_branch_mut(branch_id)?;
             branch.arena = anchor.arena_snapshot;
             branch.local_clock = anchor.clock_snapshot;
+            branch.cpu_budget_ms = anchor.cpu_budget_snapshot;
+            branch.resource_budgets = anchor.resource_budgets_snapshot;
         }
         Statement::Commit(body) => {
             if let Some(ctx) = vm.speculation_stack.last_mut() {
@@ -882,6 +888,9 @@ pub(crate) fn execute_statement_inner(
                         let target_branch = vm.get_branch_mut(&reversion.branch)?;
                         target_branch.arena = anchor.arena_snapshot;
                         target_branch.local_clock = anchor.clock_snapshot;
+                        target_branch.cpu_budget_ms = anchor.cpu_budget_snapshot;
+                        target_branch.resource_budgets =
+                            anchor.resource_budgets_snapshot;
                         target_branch.commit_horizon_passed = false;
                         return Ok(());
                     }

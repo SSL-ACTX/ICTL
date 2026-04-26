@@ -380,7 +380,13 @@ impl Vm {
             )));
         }
 
-        let (mut param_values, caller_capacity, caller_entropy_mode) = {
+        let (
+            mut param_values,
+            caller_capacity,
+            caller_entropy_mode,
+            caller_cpu_budget,
+            caller_res_budgets,
+        ) = {
             let caller_branch_inner = self.get_branch_mut(branch_id)?;
 
             let mut values: Vec<Option<Payload>> = Vec::new();
@@ -427,6 +433,8 @@ impl Vm {
                 values,
                 caller_branch_inner.arena.capacity,
                 caller_branch_inner.entropy_mode,
+                caller_branch_inner.cpu_budget_ms,
+                caller_branch_inner.resource_budgets.clone(),
             )
         };
 
@@ -440,18 +448,22 @@ impl Vm {
 
         let param_values: Vec<Payload> = param_values
             .into_iter()
-            .map(|opt| opt.expect("param value must exist"))
+            .map(|opt: Option<Payload>| opt.expect("param value must exist"))
             .collect();
 
         let child_id = format!("__routine_{}_{}", taking_ms, self.global_clock);
         let mut child =
             Timeline::new(child_id.clone(), caller_capacity, self.global_clock);
         child.entropy_mode = caller_entropy_mode;
+        child.cpu_budget_ms = caller_cpu_budget;
+        child.resource_budgets = caller_res_budgets;
 
         for ((_, param_name, _), val) in params.iter().zip(param_values) {
-            child
-                .arena
-                .insert(param_name.clone(), EntropicState::Valid(val))?;
+            let val: Payload = val;
+            child.arena.insert(
+                param_name.clone(),
+                crate::runtime::memory::EntropicState::Valid(val),
+            )?;
         }
 
         self.active_branches.insert(child_id.clone(), child);
