@@ -314,11 +314,13 @@ impl Vm {
                 };
 
                 // Record the event
-                self.causal_history.push(crate::runtime::vm::state::CausalEvent::ChannelRecv {
-                    branch_id: branch_id.to_string(),
-                    channel_id: chan_id.clone(),
-                    message: message.clone(),
-                });
+                self.causal_history.push(
+                    crate::runtime::vm::state::CausalEvent::ChannelRecv {
+                        branch_id: branch_id.to_string(),
+                        channel_id: chan_id.clone(),
+                        message: message.clone(),
+                    },
+                );
 
                 Ok(message.payload)
             }

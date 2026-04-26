@@ -64,11 +64,7 @@ impl Vm {
             keys.sort();
             for k in keys {
                 let state = &branch.arena.bindings[k];
-                println!(
-                    "  \x1b[1;33m{: <10}\x1b[0m: {}",
-                    k,
-                    state.render_decay(1)
-                );
+                println!("  \x1b[1;33m{: <10}\x1b[0m: {}", k, state.render_decay(1));
             }
         }
 
@@ -293,7 +289,7 @@ impl Vm {
             target_branch.arena = anchor.arena_snapshot;
             target_branch.local_clock = anchor.clock_snapshot;
             target_branch.commit_horizon_passed = false;
-            
+
             // In a more advanced VM we would restart the branch here.
             // For now, we just perform the state reset.
             return Ok(());
@@ -383,7 +379,9 @@ impl Vm {
                 }
             }
             ResolutionStrategy::TopologyUnion {
-                key_rules, default, on_invalid,
+                key_rules,
+                default,
+                on_invalid,
             } => match (existing, incoming) {
                 (
                     EntropicState::Valid(Payload::Struct(e_fields))
@@ -428,7 +426,9 @@ impl Vm {
                     };
 
                     // Check if we collapsed and have an on_invalid rule
-                    if matches!(final_state, EntropicState::Consumed) && triggered_reversion.is_none() {
+                    if matches!(final_state, EntropicState::Consumed)
+                        && triggered_reversion.is_none()
+                    {
                         triggered_reversion = on_invalid.clone();
                     }
 
@@ -437,7 +437,9 @@ impl Vm {
                 _ => (EntropicState::Consumed, on_invalid.clone()),
             },
             ResolutionStrategy::TopologyIntersect {
-                key_rules, default, on_invalid,
+                key_rules,
+                default,
+                on_invalid,
             } => match (existing, incoming) {
                 (
                     EntropicState::Valid(Payload::Struct(e_fields)),
@@ -467,8 +469,10 @@ impl Vm {
                         }
                     }
 
-                    let final_state = if matches!(existing, EntropicState::Valid(Payload::Topology(_)))
-                    {
+                    let final_state = if matches!(
+                        existing,
+                        EntropicState::Valid(Payload::Topology(_))
+                    ) {
                         EntropicState::Valid(Payload::Topology(merged_fields))
                     } else {
                         EntropicState::Valid(Payload::Struct(merged_fields))
@@ -500,7 +504,7 @@ impl Vm {
 
                     // Was this specific payload ever received by anyone?
                     let was_received = self.causal_history.iter().skip(i + 1).any(|e| {
-                        matches!(e, crate::runtime::vm::state::CausalEvent::ChannelRecv { channel_id: c_id, message, .. } 
+                        matches!(e, crate::runtime::vm::state::CausalEvent::ChannelRecv { channel_id: c_id, message, .. }
                             if c_id == &channel_id_val && message.id == payload_id_val)
                     });
 

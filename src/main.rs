@@ -156,15 +156,25 @@ fn main() -> anyhow::Result<()> {
             println!("\x1b[1;32m{}: run ok\x1b[0m", path.display());
             println!("\x1b[1;36m┌─ Execution Summary ──┐\x1b[0m");
             println!("\x1b[1;36m│\x1b[0m Global clock:    {}", vm.global_clock);
-            println!("\x1b[1;36m│\x1b[0m Main local clock: {}", vm.root_timeline.local_clock);
-            println!("\x1b[1;36m│\x1b[0m Arena memory:    {}/{} bytes used", vm.root_timeline.arena.used, vm.root_timeline.arena.capacity);
+            println!(
+                "\x1b[1;36m│\x1b[0m Main local clock: {}",
+                vm.root_timeline.local_clock
+            );
+            println!(
+                "\x1b[1;36m│\x1b[0m Arena memory:    {}/{} bytes used",
+                vm.root_timeline.arena.used, vm.root_timeline.arena.capacity
+            );
             println!("\x1b[1;36m└──────────────────────┘\x1b[0m");
             println!("\x1b[1;35mFinal Arena State:\x1b[0m");
             let mut keys: Vec<_> = vm.root_timeline.arena.bindings.keys().collect();
             keys.sort();
             for name in keys {
                 let state = &vm.root_timeline.arena.bindings[name];
-                println!("  \x1b[1;33m{: <10}\x1b[0m = {}", name, format_entropic_state(state));
+                println!(
+                    "  \x1b[1;33m{: <10}\x1b[0m = {}",
+                    name,
+                    format_entropic_state(state)
+                );
             }
         }
     }

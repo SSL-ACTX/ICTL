@@ -1,0 +1,47 @@
+@0ms: {
+    let account = topology { 
+        "balance": 100,
+        "status": "active" 
+    }
+    
+    split main into [thief, banker]
+}
+
+@5ms: {
+    @thief: {
+        // We MUST wrap this in an isolate to use Capabilities
+        isolate thief_isolate {
+            require System.Log
+            let cash = account["balance"]
+            require System.Log(message="Thief: I took the balance")
+        }
+    }
+
+    @banker: {
+        isolate banker_isolate {
+            require System.Log
+            account["status"] = "frozen"
+            require System.Log(message="Banker: Freezing account")
+        }
+    }
+}
+
+@10ms: {
+    merge [thief, banker] into main resolving (
+        account: topology_union {
+            "balance": priority(thief),
+            "status": priority(banker),
+            "_": decay
+            on_invalid: rewind thief to base
+        }
+    )
+
+    isolate result_check {
+        require System.Log
+        match entropy(account["balance"]) {
+            Valid(v): require System.Log(message="Restored")
+            Consumed: require System.Log(message="Balance is gone")
+            Decayed(d): require System.Log(message="Partial decay")
+        }
+    }
+}

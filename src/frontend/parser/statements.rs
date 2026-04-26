@@ -1014,7 +1014,9 @@ fn parse_manifest(pair: Pair<Rule>) -> Manifest {
                         manifest.memory_budget_bytes = Some(amount * multiplier);
                     }
                     _ => {
-                        manifest.resource_budgets.insert(res_type.to_string(), amount);
+                        manifest
+                            .resource_budgets
+                            .insert(res_type.to_string(), amount);
                     }
                 }
             }

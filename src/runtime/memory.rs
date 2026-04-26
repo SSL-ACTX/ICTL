@@ -272,15 +272,21 @@ impl Arena {
     }
 
     pub fn consume(&mut self, identifier: &str) -> Result<Payload, MemoryError> {
-        let state = self.bindings.get(identifier).ok_or(MemoryError::AlreadyConsumed)?;
+        let state = self
+            .bindings
+            .get(identifier)
+            .ok_or(MemoryError::AlreadyConsumed)?;
         match state {
             EntropicState::Valid(payload) => {
                 let payload = payload.clone();
                 let old_weight = state.weight();
                 let new_state = EntropicState::Consumed;
                 let new_weight = new_state.weight();
-                
-                self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
+
+                self.used = self
+                    .used
+                    .saturating_sub(old_weight)
+                    .saturating_add(new_weight);
                 self.bindings.insert(identifier.to_string(), new_state);
                 Ok(payload)
             }
@@ -298,12 +304,15 @@ impl Arena {
             .bindings
             .remove(identifier)
             .ok_or(MemoryError::AlreadyConsumed)?;
-        
+
         let old_weight = state.weight();
         let new_state = EntropicState::Consumed;
         let new_weight = new_state.weight();
-        
-        self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
+
+        self.used = self
+            .used
+            .saturating_sub(old_weight)
+            .saturating_add(new_weight);
         self.bindings.insert(identifier.to_string(), new_state);
         Ok(state)
     }
@@ -346,7 +355,10 @@ impl Arena {
                 // Re-insert the parent as Decayed
                 let new_state = EntropicState::Decayed(fields);
                 let new_parent_weight = new_state.weight();
-                self.used = self.used.saturating_sub(old_parent_weight).saturating_add(new_parent_weight);
+                self.used = self
+                    .used
+                    .saturating_sub(old_parent_weight)
+                    .saturating_add(new_parent_weight);
                 self.bindings.insert(parent.to_string(), new_state);
                 Ok(field_state)
             }
@@ -375,7 +387,10 @@ impl Arena {
             let old_weight = state.weight();
             let new_state = EntropicState::Consumed;
             let new_weight = new_state.weight();
-            self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
+            self.used = self
+                .used
+                .saturating_sub(old_weight)
+                .saturating_add(new_weight);
             self.bindings.insert(identifier.to_string(), new_state);
             Ok(())
         } else {
@@ -384,18 +399,26 @@ impl Arena {
     }
 
     pub fn decay(&mut self, identifier: &str) -> Result<(), MemoryError> {
-        let state = self.bindings.remove(identifier).ok_or(MemoryError::AlreadyConsumed)?;
+        let state = self
+            .bindings
+            .remove(identifier)
+            .ok_or(MemoryError::AlreadyConsumed)?;
         let old_weight = state.weight();
-        
+
         let new_state = match state {
-            EntropicState::Valid(Payload::Struct(fields)) => EntropicState::Decayed(fields),
+            EntropicState::Valid(Payload::Struct(fields)) => {
+                EntropicState::Decayed(fields)
+            }
             EntropicState::Valid(_) => EntropicState::Consumed,
             EntropicState::Decayed(fields) => EntropicState::Decayed(fields),
             _ => EntropicState::Consumed,
         };
-        
+
         let new_weight = new_state.weight();
-        self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
+        self.used = self
+            .used
+            .saturating_sub(old_weight)
+            .saturating_add(new_weight);
         self.bindings.insert(identifier.to_string(), new_state);
         Ok(())
     }
@@ -421,7 +444,8 @@ impl Arena {
             .ok_or(MemoryError::AlreadyConsumed)?;
 
         let old_parent_weight = state.weight();
-        let is_topology = matches!(state, EntropicState::Valid(Payload::Topology(_)));
+        let is_topology =
+            matches!(state, EntropicState::Valid(Payload::Topology(_)));
         let is_struct = matches!(state, EntropicState::Valid(Payload::Struct(_)));
 
         match state {
@@ -429,7 +453,7 @@ impl Arena {
             | EntropicState::Valid(Payload::Topology(mut fields))
             | EntropicState::Decayed(mut fields) => {
                 fields.insert(field.to_string(), EntropicState::Valid(new_value));
-                
+
                 let new_state = if is_struct {
                     EntropicState::Valid(Payload::Struct(fields))
                 } else if is_topology {
@@ -437,17 +461,26 @@ impl Arena {
                 } else {
                     EntropicState::Decayed(fields)
                 };
-                
+
                 let new_parent_weight = new_state.weight();
-                if self.used.saturating_sub(old_parent_weight) + new_parent_weight > self.capacity {
+                if self.used.saturating_sub(old_parent_weight) + new_parent_weight
+                    > self.capacity
+                {
                     // This is a simplified restore; in a real robust system we'd need more care
                     // but we already removed it from bindings so we MUST put something back.
                     // For now, let's just fail. A better implementation would pre-calculate.
-                    self.bindings.insert(parent.to_string(), EntropicState::Consumed); 
-                    return Err(MemoryError::OutOfMemory(new_parent_weight, self.capacity - (self.used - old_parent_weight)));
+                    self.bindings
+                        .insert(parent.to_string(), EntropicState::Consumed);
+                    return Err(MemoryError::OutOfMemory(
+                        new_parent_weight,
+                        self.capacity - (self.used - old_parent_weight),
+                    ));
                 }
 
-                self.used = self.used.saturating_sub(old_parent_weight).saturating_add(new_parent_weight);
+                self.used = self
+                    .used
+                    .saturating_sub(old_parent_weight)
+                    .saturating_add(new_parent_weight);
                 self.bindings.insert(parent.to_string(), new_state);
                 Ok(())
             }
@@ -478,7 +511,8 @@ impl Arena {
             .ok_or(MemoryError::AlreadyConsumed)?;
 
         let old_weight = state.weight();
-        let is_topology = matches!(state, EntropicState::Valid(Payload::Topology(_)));
+        let is_topology =
+            matches!(state, EntropicState::Valid(Payload::Topology(_)));
         let is_struct = matches!(state, EntropicState::Valid(Payload::Struct(_)));
 
         match state {
@@ -496,14 +530,22 @@ impl Arena {
                 } else {
                     EntropicState::Decayed(fields)
                 };
-                
+
                 let new_weight = final_state.weight();
-                if self.used.saturating_sub(old_weight) + new_weight > self.capacity {
-                    self.bindings.insert(root.to_string(), EntropicState::Consumed);
-                    return Err(MemoryError::OutOfMemory(new_weight, self.capacity - (self.used - old_weight)));
+                if self.used.saturating_sub(old_weight) + new_weight > self.capacity
+                {
+                    self.bindings
+                        .insert(root.to_string(), EntropicState::Consumed);
+                    return Err(MemoryError::OutOfMemory(
+                        new_weight,
+                        self.capacity - (self.used - old_weight),
+                    ));
                 }
 
-                self.used = self.used.saturating_sub(old_weight).saturating_add(new_weight);
+                self.used = self
+                    .used
+                    .saturating_sub(old_weight)
+                    .saturating_add(new_weight);
                 self.bindings.insert(root.to_string(), final_state);
                 Ok(())
             }

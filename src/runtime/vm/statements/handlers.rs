@@ -80,7 +80,7 @@ pub(crate) fn execute_statement_inner(
         } => {
             let original_branch = vm.get_branch_mut(branch_id)?.clone();
             let history_start_index = vm.causal_history.len();
-            
+
             let fallback_cost =
                 vm.estimate_block_cost(fallback.as_ref().unwrap_or(&Vec::new()));
 
@@ -510,13 +510,17 @@ pub(crate) fn execute_statement_inner(
             if branch.entropy_mode == EntropyMode::Chaos {
                 return Err(TemporalError::RewindDisabledInChaos);
             }
-            let anchor = branch.anchors.get(name).ok_or_else(|| {
-                if branch.commit_horizon_passed {
-                    TemporalError::CommitHorizonViolation
-                } else {
-                    TemporalError::AnchorNotFound(name.clone())
-                }
-            })?.clone();
+            let anchor = branch
+                .anchors
+                .get(name)
+                .ok_or_else(|| {
+                    if branch.commit_horizon_passed {
+                        TemporalError::CommitHorizonViolation
+                    } else {
+                        TemporalError::AnchorNotFound(name.clone())
+                    }
+                })?
+                .clone();
 
             // Causal Validation and Reversion
             vm.causal_rollback(branch_id, anchor.history_index)?;
@@ -563,12 +567,14 @@ pub(crate) fn execute_statement_inner(
             };
 
             // Record the event
-            vm.causal_history.push(crate::runtime::vm::state::CausalEvent::InterBranchMove {
-                source_branch: branch_id.to_string(),
-                target_branch: target_branch.clone(),
-                var_name: value_id.clone(),
-                message,
-            });
+            vm.causal_history.push(
+                crate::runtime::vm::state::CausalEvent::InterBranchMove {
+                    source_branch: branch_id.to_string(),
+                    target_branch: target_branch.clone(),
+                    var_name: value_id.clone(),
+                    message,
+                },
+            );
 
             let target = vm.get_branch_mut(target_branch)?;
             target
@@ -599,11 +605,13 @@ pub(crate) fn execute_statement_inner(
             };
 
             // Record the event
-            vm.causal_history.push(crate::runtime::vm::state::CausalEvent::ChannelSend {
-                branch_id: branch_id.to_string(),
-                channel_id: chan_id.clone(),
-                payload_id,
-            });
+            vm.causal_history.push(
+                crate::runtime::vm::state::CausalEvent::ChannelSend {
+                    branch_id: branch_id.to_string(),
+                    channel_id: chan_id.clone(),
+                    payload_id,
+                },
+            );
 
             if isochronous {
                 let pending =
@@ -649,16 +657,25 @@ pub(crate) fn execute_statement_inner(
 
             if let Some(case) = selected_case {
                 if let Expression::ChannelReceive(chan_id) = &case.source {
-                    let message = vm.channels.get_mut(chan_id).and_then(|q| q.pop_front()).ok_or_else(|| {
-                        TemporalError::ChannelFault(format!("Channel empty: {}", chan_id))
-                    })?;
+                    let message = vm
+                        .channels
+                        .get_mut(chan_id)
+                        .and_then(|q| q.pop_front())
+                        .ok_or_else(|| {
+                            TemporalError::ChannelFault(format!(
+                                "Channel empty: {}",
+                                chan_id
+                            ))
+                        })?;
 
                     // Record the event
-                    vm.causal_history.push(crate::runtime::vm::state::CausalEvent::ChannelRecv {
-                        branch_id: branch_id.to_string(),
-                        channel_id: chan_id.clone(),
-                        message: message.clone(),
-                    });
+                    vm.causal_history.push(
+                        crate::runtime::vm::state::CausalEvent::ChannelRecv {
+                            branch_id: branch_id.to_string(),
+                            channel_id: chan_id.clone(),
+                            message: message.clone(),
+                        },
+                    );
 
                     let branch = vm.get_branch_mut(branch_id)?;
                     branch.arena.insert(
@@ -846,15 +863,18 @@ pub(crate) fn execute_statement_inner(
                     );
 
                     final_state.arena.insert(var.clone(), resolved)?;
-                    
+
                     if let Some(reversion) = rev {
                         let anchor = {
-                            let target_branch = vm.get_branch_mut(&reversion.branch)?;
+                            let target_branch =
+                                vm.get_branch_mut(&reversion.branch)?;
                             target_branch
                                 .anchors
                                 .get(&reversion.anchor)
                                 .ok_or_else(|| {
-                                    TemporalError::AnchorNotFound(reversion.anchor.clone())
+                                    TemporalError::AnchorNotFound(
+                                        reversion.anchor.clone(),
+                                    )
                                 })?
                                 .clone()
                         };

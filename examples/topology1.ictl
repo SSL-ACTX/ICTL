@@ -1,0 +1,29 @@
+@0ms: {
+    let graph = topology {
+        "core": struct { status: "stable", val: 1 }
+    }
+
+    split main into [alpha, beta]
+}
+
+@5ms: {
+    @alpha: {
+        graph["core"].status = "upgrading"
+    }
+
+    @beta: {
+        graph["core"].status = "downgrade"
+    }
+}
+
+@10ms: {
+    merge [alpha, beta] into main resolving (
+        graph: topology_union {
+            "core": priority(alpha),
+            "_": decay
+            on_invalid: rewind alpha to base
+        }
+    )
+
+    let final_status = graph["core"].status
+}

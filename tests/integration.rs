@@ -1953,12 +1953,12 @@ fn integration_capability_budget_enforcement() -> anyhow::Result<()> {
 
     let mut vm = Vm::new();
     vm.register_capability("System.Log", |_params| Ok(()));
-    
+
     let result = vm.execute_statement("main", &program.timelines[0].statements[0]);
     match result {
         Err(TemporalError::CapabilityViolation(msg)) => {
             assert!(msg.contains("Capability budget exhausted"));
-        },
+        }
         other => panic!("Expected CapabilityViolation, got {:?}", other),
     }
 

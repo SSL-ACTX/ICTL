@@ -1,0 +1,11 @@
+@0ms: {
+  let node_b = struct { value = 2, next = "null" }
+  
+  // 'node_b' is CONSUMED here. It physically moves inside 'node_a'.
+  // It no longer exists independently in the Arena.
+  let node_a = struct { value = 1, next = node_b }
+  
+  // If you try to close the loop by mutating 'node_b' to point to 'node_a'...
+  // ERROR: 'node_b' is already Consumed! 
+  let node_b.next = node_a 
+}
