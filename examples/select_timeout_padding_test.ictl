@@ -1,0 +1,19 @@
+@0ms: {
+    open_chan p1(10)
+    
+    assert_time(elapsed == 2ms)
+    
+    select (max 50ms) {
+        case x = chan_recv(p1):
+            print("Received p1")
+        timeout:
+            print("Timed out")
+    }
+    
+    // Verify deterministic timeout padding: base(2) + select(1) + max_wait(50) + timeout_wcet(1) + assert(1) = 55ms
+    assert_time(elapsed == 55ms) else {
+        print("Error: timeout finished at wrong time!")
+    }
+    
+    print("Timeout padding verified.")
+}

@@ -65,7 +65,12 @@ impl Vm {
                 let body_cost = self.estimate_block_cost(body);
                 1 + body_cost + fallback_cost
             }
-            Statement::Select { cases, timeout, .. } => {
+            Statement::Select {
+                max_ms,
+                cases,
+                timeout,
+                ..
+            } => {
                 let case_max_cost = cases
                     .iter()
                     .map(|c| self.estimate_block_cost(&c.body))
@@ -75,7 +80,7 @@ impl Vm {
                     .as_ref()
                     .map(|b| self.estimate_block_cost(b))
                     .unwrap_or(0);
-                1 + case_max_cost.max(timeout_cost)
+                *max_ms + case_max_cost.max(timeout_cost)
             }
             Statement::MatchEntropy {
                 valid_branch,

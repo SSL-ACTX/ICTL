@@ -1074,7 +1074,12 @@ pub fn estimate_statement_cost(
             let body_cost = estimate_block_cost(analyzer, body);
             1 + body_cost + fallback_cost
         }
-        Statement::Select { cases, timeout, .. } => {
+        Statement::Select {
+            max_ms,
+            cases,
+            timeout,
+            ..
+        } => {
             let case_max_cost = cases
                 .iter()
                 .map(|c| estimate_block_cost(analyzer, &c.body))
@@ -1084,7 +1089,7 @@ pub fn estimate_statement_cost(
                 .as_ref()
                 .map(|b| estimate_block_cost(analyzer, b))
                 .unwrap_or(0);
-            1 + case_max_cost.max(timeout_cost)
+            *max_ms + 1 + case_max_cost.max(timeout_cost)
         }
         Statement::MatchEntropy {
             valid_branch,

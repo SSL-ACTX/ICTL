@@ -704,7 +704,7 @@ pub(crate) fn execute_statement_inner(
             }
         }
         Statement::Select {
-            max_ms: _,
+            max_ms,
             cases,
             timeout,
             reconcile: _,
@@ -776,7 +776,8 @@ pub(crate) fn execute_statement_inner(
                 .map(|b| vm.estimate_block_cost(b))
                 .unwrap_or(0);
 
-            let target_clock = original_clock + 1 + case_max_cost.max(timeout_cost);
+            let target_clock =
+                original_clock + max_ms + case_max_cost.max(timeout_cost);
             let branch = vm.get_branch_mut(branch_id)?;
             if branch.local_clock < target_clock {
                 let padding = target_clock - branch.local_clock;

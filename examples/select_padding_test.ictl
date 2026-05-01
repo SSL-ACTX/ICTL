@@ -1,0 +1,23 @@
+@0ms: {
+    open_chan p1(10)
+    open_chan p2(10)
+    
+    let m1 = 1
+    chan_send p1(m1)
+    
+    assert_time(elapsed == 5ms) 
+    
+    select (max 100ms) {
+        case x = chan_recv(p1):
+            print("Received p1")
+        timeout:
+            print("Timeout")
+    }
+    
+    // Verify deterministic padding: base(5) + select(1) + max_wait(100) + case_wcet(1) + assert(1) = 108ms
+    assert_time(elapsed == 108ms) else {
+        print("Error: select finished at wrong time!")
+    }
+    
+    print("Select padding verified.")
+}
