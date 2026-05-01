@@ -324,7 +324,12 @@ impl Vm {
 
                 Ok(message.payload)
             }
-            Expression::Deferred { .. } => {
+            Expression::Deferred { capability, .. } => {
+                if !self.capability_handlers.contains_key(capability) {
+                    return Err(TemporalError::MissingCapability(
+                        capability.clone(),
+                    ));
+                }
                 Ok(Payload::String("pending".to_string()))
             }
             Expression::Call { routine, args } => {

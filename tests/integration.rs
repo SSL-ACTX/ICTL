@@ -312,6 +312,7 @@ fn integration_if_equalizes_timing() -> anyhow::Result<()> {
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
+    vm.register_capability("System.NetworkFetch", |_| Ok(()));
     for stmt in &program.timelines[0].statements {
         vm.execute_statement("main", stmt)?;
     }
@@ -1080,6 +1081,7 @@ fn integration_network_request_syntax_parse_and_execute() -> anyhow::Result<()> 
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
+    vm.register_capability("System.NetworkFetch", |_| Ok(()));
     vm.execute_statement("main", &program.timelines[0].statements[0])?;
 
     let before = vm.root_timeline.cpu_budget_ms;
@@ -1106,6 +1108,8 @@ fn integration_defer_await_success() -> anyhow::Result<()> {
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
+    vm.register_capability("System.NetworkFetch", |_| Ok(()));
+    vm.register_capability("System.Log", |_| Ok(()));
     for stmt in &program.timelines[0].statements {
         vm.execute_statement("main", stmt)?;
     }
@@ -1184,6 +1188,7 @@ fn integration_relativistic_network_request_merge() -> anyhow::Result<()> {
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
+    vm.register_capability("System.NetworkFetch", |_| Ok(()));
     vm.execute_statement("main", &program.timelines[0].statements[0])?;
     vm.execute_statement("a", &program.timelines[1].statements[0])?;
     vm.execute_statement("b", &program.timelines[2].statements[0])?;
@@ -1254,6 +1259,7 @@ fn integration_print_statement() -> anyhow::Result<()> {
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
+    vm.register_capability("System.Log", |_| Ok(()));
     for timeline in &program.timelines {
         let branch = match &timeline.time {
             ictl::frontend::ast::TimeCoordinate::Global(_) => "main",
@@ -1288,6 +1294,7 @@ fn integration_debug_log_non_consuming() -> anyhow::Result<()> {
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
+    vm.register_capability("System.Log", |_| Ok(()));
     for timeline in &program.timelines {
         let branch = match &timeline.time {
             ictl::frontend::ast::TimeCoordinate::Global(_) => "main",
@@ -1643,7 +1650,7 @@ fn integration_channel_receive_from_empty_channel_fails() -> anyhow::Result<()> 
 }
 
 #[test]
-fn integration_rewind_in_chaos_mode_fails_runtime() -> anyhow::Result<()> {
+fn integration_rewind_in_chaos_mode_fails_analyzer() -> anyhow::Result<()> {
     let source = r#"
     @0ms: {
       isolate net {
@@ -1656,11 +1663,8 @@ fn integration_rewind_in_chaos_mode_fails_runtime() -> anyhow::Result<()> {
 
     let program = parser::parse_ictl(source)?;
     let mut analyzer = EntropicAnalyzer::new();
-    analyzer.analyze_program(&program)?;
-
-    let mut vm = Vm::new();
-    let res = vm.execute_statement("main", &program.timelines[0].statements[0]);
-    assert!(matches!(res, Err(TemporalError::RewindDisabledInChaos)));
+    let res = analyzer.analyze_program(&program);
+    assert!(res.is_err());
 
     Ok(())
 }

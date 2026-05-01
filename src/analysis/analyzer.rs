@@ -37,6 +37,8 @@ pub enum SemanticErrorKind {
     InvalidStructuralAccess(String),
     #[error("Capability violation: Required capability '{0}' is not declared in this isolate.")]
     MissingCapability(String),
+    #[error("Chaos Mode enabled: Rewinds and anchors are disabled because non-deterministic entropy was requested.")]
+    ChaosModePreventsRewind,
 }
 
 #[derive(Debug)]
@@ -104,7 +106,8 @@ pub struct EntropicAnalyzer {
     pub(crate) current_slice_ms: Option<u64>,
     pub source: Option<String>,
     pub(crate) filename: Option<String>,
-    pub(crate) capability_stack: Vec<HashSet<String>>,
+    pub(crate) capability_stack:
+        Vec<HashMap<String, crate::frontend::ast::Capability>>,
     pub(crate) routines: HashMap<String, RoutineInfo>,
     pub span_states: HashMap<Span, BranchState>,
 }
@@ -172,7 +175,17 @@ impl EntropicAnalyzer {
         self.capability_stack
             .iter()
             .rev()
-            .any(|set| set.contains(cap))
+            .any(|map| map.contains_key(cap))
+    }
+
+    pub(crate) fn get_capability(
+        &self,
+        cap: &str,
+    ) -> Option<&crate::frontend::ast::Capability> {
+        self.capability_stack
+            .iter()
+            .rev()
+            .find_map(|map| map.get(cap))
     }
 
     pub fn analyze_program(

@@ -418,8 +418,9 @@ pub(crate) fn execute_statement_inner(
             if vm.capability_handlers.contains_key("System.Log") {
                 vm.execute_capability(branch_id, &cap)?;
             } else {
-                // Fallback for host-side debugging outside strict capability isolation.
-                println!("[ictl] {}", payload);
+                return Err(TemporalError::MissingCapability(
+                    "System.Log".to_string(),
+                ));
             }
         }
         Statement::Debug(expr) => {
@@ -433,7 +434,9 @@ pub(crate) fn execute_statement_inner(
             if vm.capability_handlers.contains_key("System.Log") {
                 vm.execute_capability(branch_id, &cap)?;
             } else {
-                println!("[ictl-debug] {}", payload);
+                return Err(TemporalError::MissingCapability(
+                    "System.Log".to_string(),
+                ));
             }
         }
         Statement::Assignment { target, expr, .. } => {
@@ -1154,6 +1157,11 @@ pub(crate) fn execute_statement_inner(
             vm.evaluate_expression(branch_id, expr)?;
         }
         Statement::NetworkRequest { .. } => {
+            if !vm.capability_handlers.contains_key("System.NetworkFetch") {
+                return Err(TemporalError::MissingCapability(
+                    "System.NetworkFetch".to_string(),
+                ));
+            }
             let branch = vm.get_branch_mut(branch_id)?;
             branch.local_clock += 5;
             branch.consume_budget(5)?;

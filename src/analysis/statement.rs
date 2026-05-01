@@ -247,9 +247,9 @@ pub(crate) fn analyze_statement(
             }
         }
         Statement::Isolate(block) => {
-            let mut cap_set = HashSet::new();
+            let mut cap_set = std::collections::HashMap::new();
             for cap in &block.manifest.capabilities {
-                cap_set.insert(cap.path.clone());
+                cap_set.insert(cap.path.clone(), cap.clone());
             }
             analyzer.capability_stack.push(cap_set);
 
@@ -845,12 +845,28 @@ pub(crate) fn analyze_statement(
                 analyze_statement(analyzer, inner_stmt)?;
             }
         }
+        Statement::NetworkRequest { .. } => {
+            if !analyzer.capability_stack.is_empty()
+                && !analyzer.is_capability_allowed("System.NetworkFetch")
+            {
+                return Err(analyzer.annotate(
+                    SemanticErrorKind::MissingCapability(
+                        "System.NetworkFetch".to_string(),
+                    ),
+                ));
+            }
+        }
         Statement::Anchor(_)
         | Statement::Rewind(_)
-        | Statement::Entangle { .. }
-        | Statement::ChannelOpen { .. }
-        | Statement::NetworkRequest { .. }
-        | Statement::AcausalReset { .. } => {}
+        | Statement::AcausalReset { .. } => {
+            if let Some(cap) = analyzer.get_capability("System.Entropy") {
+                if cap.parameters.get("mode").map(|s| s.as_str()) == Some("chaos") {
+                    return Err(analyzer
+                        .annotate(SemanticErrorKind::ChaosModePreventsRewind));
+                }
+            }
+        }
+        Statement::Entangle { .. } | Statement::ChannelOpen { .. } => {}
         Statement::Capability(cap) => {
             if !analyzer.is_capability_allowed(&cap.path) {
                 return Err(analyzer.annotate(

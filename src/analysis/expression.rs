@@ -238,12 +238,21 @@ pub(crate) fn analyze_expression(
             analyze_expression_nonconsuming(analyzer, index)?;
             Ok(())
         }
+        Expression::Deferred { capability, .. } => {
+            if !analyzer.capability_stack.is_empty()
+                && !analyzer.is_capability_allowed(capability)
+            {
+                return Err(analyzer.annotate(
+                    SemanticErrorKind::MissingCapability(capability.clone()),
+                ));
+            }
+            Ok(())
+        }
         Expression::ChannelReceive(_)
         | Expression::Literal(_)
         | Expression::Integer(_)
         | Expression::Boolean(_)
-        | Expression::ArrayLiteral(_)
-        | Expression::Deferred { .. } => Ok(()),
+        | Expression::ArrayLiteral(_) => Ok(()),
         Expression::BinaryOp { left, right, .. } => {
             analyze_expression(analyzer, left)?;
             analyze_expression(analyzer, right)?;
@@ -292,12 +301,21 @@ pub(crate) fn analyze_expression_nonconsuming(
             }
             Ok(())
         }
+        Expression::Deferred { capability, .. } => {
+            if !analyzer.capability_stack.is_empty()
+                && !analyzer.is_capability_allowed(capability)
+            {
+                return Err(analyzer.annotate(
+                    SemanticErrorKind::MissingCapability(capability.clone()),
+                ));
+            }
+            Ok(())
+        }
         Expression::ChannelReceive(_)
         | Expression::Literal(_)
         | Expression::Integer(_)
         | Expression::Boolean(_)
-        | Expression::Null
-        | Expression::Deferred { .. } => Ok(()),
+        | Expression::Null => Ok(()),
         Expression::BinaryOp { left, right, .. } => {
             analyze_expression_nonconsuming(analyzer, left)?;
             analyze_expression_nonconsuming(analyzer, right)?;
