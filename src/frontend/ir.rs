@@ -138,9 +138,26 @@ fn lower_statement_lines(stmt: &Statement, indent: usize) -> Vec<IrInstruction> 
             args: variables.clone(),
             indent,
         }],
-        Statement::TypeDecl { name, fields } => vec![IrInstruction {
+        Statement::TypeDecl {
+            name,
+            fields,
+            decay_after_ms: _,
+            scoped_branch: _,
+        } => vec![IrInstruction {
             op: format!("TYPE_DECL {}", name),
             args: fields.keys().cloned().collect(),
+            indent,
+        }],
+        Statement::DecayHandler { type_name, .. } => vec![IrInstruction {
+            op: format!("DECAY_HANDLER {}", type_name),
+            args: vec![],
+            indent,
+        }],
+        Statement::AssertTime {
+            operator, limit_ms, ..
+        } => vec![IrInstruction {
+            op: "ASSERT_TIME".to_string(),
+            args: vec![format!("{:?}", operator), limit_ms.to_string()],
             indent,
         }],
         _ => vec![IrInstruction {
@@ -384,6 +401,17 @@ fn lower_statement(stmt: &Statement) -> String {
             )
         }
         Statement::TypeDecl { name, .. } => format!("type {} {{ ... }}", name),
+        Statement::DecayHandler { type_name, .. } => {
+            format!("decay_handler for {} {{ ... }}", type_name)
+        }
+        Statement::AssertTime {
+            operator, limit_ms, ..
+        } => {
+            format!(
+                "assert_time (elapsed {:?} {}ms) {{ ... }}",
+                operator, limit_ms
+            )
+        }
         Statement::Entangle { variables } => {
             format!("entangle({})", variables.join(", "))
         }

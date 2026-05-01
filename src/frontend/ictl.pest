@@ -37,6 +37,8 @@ statement = {
     | loop_stmt
     | yield_stmt
     | type_decl
+    | decay_handler_stmt
+    | assert_time_stmt
     | assignment_stmt
     | open_chan_stmt
     | chan_send_stmt
@@ -50,6 +52,10 @@ statement = {
 }
 
 entangle_stmt = { "entangle" ~ "(" ~ identifier_list ~ ")" }
+
+decay_handler_stmt = { "decay_handler" ~ "for" ~ identifier ~ "{" ~ statement* ~ "}" }
+
+assert_time_stmt = { "assert_time" ~ "(" ~ "elapsed" ~ relop ~ amount ~ "ms" ~ ")" ~ ("else" ~ statement_block)? }
 
 print_stmt = { "print" ~ "(" ~ expression ~ ")" }
 
@@ -177,7 +183,9 @@ identifier_expr = { identifier }
 chan_recv_expr = { "chan_recv" ~ "(" ~ identifier ~ ")" }
 type_field = { identifier ~ ":" ~ type_name }
 type_field_list = { type_field ~ ("," ~ type_field)* }
-type_decl = { "type" ~ identifier ~ "=" ~ "struct" ~ "{" ~ type_field_list? ~ "}" }
+decay_opt = { "decay_after" ~ amount ~ "ms" }
+scoped_opt = { "scoped" ~ "(" ~ "@" ~ identifier ~ ")" }
+type_decl = { "type" ~ identifier ~ "=" ~ "struct" ~ decay_opt? ~ scoped_opt? ~ "{" ~ type_field_list? ~ "}" }
 
 identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 string_literal = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }

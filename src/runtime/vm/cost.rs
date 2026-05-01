@@ -32,6 +32,13 @@ impl Vm {
             | Statement::FieldUpdate { .. }
             | Statement::Expression(_)
             | Statement::Print(_) => 0,
+            Statement::DecayHandler { body, .. } => self.estimate_block_cost(body),
+            Statement::AssertTime { fallback, .. } => {
+                1 + fallback
+                    .as_ref()
+                    .map(|b| self.estimate_block_cost(b))
+                    .unwrap_or(0)
+            }
             Statement::RelativisticBlock { body, .. } => {
                 self.estimate_block_cost(body)
             }

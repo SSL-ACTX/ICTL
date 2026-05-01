@@ -203,11 +203,19 @@ impl EntropicState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueMetadata {
+    pub instantiated_at: u64,
+    pub type_name: Option<String>,
+    pub decay_after_ms: Option<u64>,
+}
+
 #[derive(Clone)]
 pub struct Arena {
     pub capacity: u64,
     pub used: u64,
     pub(crate) bindings: HashMap<String, EntropicState>,
+    pub(crate) metadata: HashMap<String, ValueMetadata>,
 }
 
 impl Arena {
@@ -216,6 +224,7 @@ impl Arena {
             capacity,
             used: 0,
             bindings: HashMap::new(),
+            metadata: HashMap::new(),
         }
     }
 
@@ -247,13 +256,26 @@ impl Arena {
         }
 
         self.used = potential_used + state_weight;
-        self.bindings.insert(identifier, state);
+        self.bindings.insert(identifier.clone(), state);
+        self.metadata.remove(&identifier); // Clear old metadata
+        Ok(())
+    }
+
+    pub fn insert_with_metadata(
+        &mut self,
+        identifier: String,
+        state: EntropicState,
+        meta: ValueMetadata,
+    ) -> Result<(), MemoryError> {
+        self.insert(identifier.clone(), state)?;
+        self.metadata.insert(identifier, meta);
         Ok(())
     }
 
     /// Drop all arena state immediately for deterministic bulk deallocation.
     pub fn clear(&mut self) {
         self.bindings.clear();
+        self.metadata.clear();
         self.used = 0;
     }
 

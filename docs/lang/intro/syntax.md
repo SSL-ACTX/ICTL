@@ -47,20 +47,52 @@ let <identifier> = <expression>
 - If `<expression>` is a variable, it is **consumed** (moved) from its source and becomes unavailable unless wrapped in `clone()`.
 - If `<expression>` is a literal, it is allocated in the local arena.
 
-### Expression Types
-- **Literals**:
-  - String: `"hello"`
-  - Integer: `42`, `-5`
-  - Array: `[1, 2, 3]`
-  - Struct: `struct { a = 1, b = "x" }`
-- **Field Access**: `s.a` (Triggers **structural decay** in the parent struct `s`).
-- **Clone Operation**: `clone(x)` (Creates a deep copy of `x`; consumes CPU budget based on payload weight).
-- **Channel Receive**: `chan_recv(chan)` (Destructively reads a value from a channel).
-- **Deferred Promise**: `defer <capability>(<params>) deadline <amount>ms` (Creates a `Pending` state value).
+### Type Definitions (`type`)
+Defines custom structures with advanced temporal and entropic constraints.
+
+**Syntax:**
+```ictl
+type <name> = struct [decay_after <amount>ms] [scoped(@<branch>)] {
+    <field_list>
+}
+```
+
+**Advanced Features:**
+- **Auto-Decay (`decay_after`)**: The variable automatically transitions to the `Decayed` state once its age (measured from instantiation) exceeds the specified duration.
+- **Timeline-Scope (`scoped`)**: Restricts the type to a specific timeline branch. Any attempt to move or instantiate it in a different branch triggers a `Timeline Violation`.
+
+**Example:**
+```ictl
+type SessionToken = struct decay_after 50ms {
+    id: int
+}
+```
+
+### Entropic Transitions (`decay_handler`)
+Defines a logic block that executes automatically immediately before a variable of a specific type decays.
+
+**Syntax:**
+```ictl
+decay_handler for <type_name> {
+    <statements>
+}
+```
 
 ---
 
 ## 3. Control Flow
+
+### Temporal Assertions (`assert_time`)
+Enforces strict temporal constraints on execution.
+
+**Syntax:**
+```ictl
+assert_time(elapsed <relop> <amount>ms) [else <statement_block>]
+```
+
+**Semantics:**
+- **Static Analysis**: The analyzer computes the Worst-Case Execution Time (WCET). If the limit is statically exceeded, a `Temporal Assertion Violation` is thrown.
+- **Dynamic Check**: The VM verifies the local clock at runtime. If the assertion fails, the `else` block is executed, or execution faults if no fallback is provided.
 
 ### Conditional Execution (`if`)
 Performs speculative path evaluation followed by deterministic state reconciliation.

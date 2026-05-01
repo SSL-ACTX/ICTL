@@ -1,13 +1,20 @@
 use crate::frontend::ast::{BuiltinType, TypeName};
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructType {
+    pub fields: HashMap<String, Type>,
+    pub decay_after_ms: Option<u64>,
+    pub scoped_branch: Option<String>,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Integer,
     Bool,
     String,
-    Struct(HashMap<String, Type>),
+    Struct(StructType),
     Topology(HashMap<String, Type>),
     Array(Box<Type>),
     Optional(Box<Type>),
@@ -28,7 +35,11 @@ impl Type {
                 BuiltinType::Integer => Type::Integer,
                 BuiltinType::Bool => Type::Bool,
                 BuiltinType::String => Type::String,
-                BuiltinType::Struct => Type::Struct(HashMap::new()),
+                BuiltinType::Struct => Type::Struct(StructType {
+                    fields: HashMap::new(),
+                    decay_after_ms: None,
+                    scoped_branch: None,
+                }),
                 BuiltinType::Topology => Type::Topology(HashMap::new()),
                 BuiltinType::Array => Type::Array(Box::new(Type::Unknown)),
             },

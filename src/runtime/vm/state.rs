@@ -70,11 +70,14 @@ pub struct Vm {
     pub channels: HashMap<String, VecDeque<Message>>,
     pub pending_channels: HashMap<String, VecDeque<Message>>,
     pub routines: HashMap<String, Routine>,
+    pub decay_handlers: HashMap<String, Vec<crate::frontend::ast::SpannedStatement>>,
+    pub type_decay_limits: HashMap<String, Option<u64>>,
     pub(crate) speculation_stack: Vec<SpeculationContext>,
     pub entanglements: Vec<std::collections::HashSet<(String, String)>>,
     pub causal_history: Vec<CausalEvent>,
     pub next_payload_id: u64,
     pub trace_entropy: bool,
+    pub(crate) is_decaying: bool,
 }
 
 #[derive(Clone)]

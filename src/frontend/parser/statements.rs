@@ -226,18 +226,107 @@ pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
                 .next()
                 .map(|p| p.as_str().to_string())
                 .unwrap_or_default();
+
+            let mut decay_after_ms = None;
+            let mut scoped_branch = None;
             let mut fields = std::collections::HashMap::new();
-            if let Some(field_list) = inner.next() {
-                for field_pair in field_list.into_inner() {
-                    let mut kv = field_pair.into_inner();
-                    if let (Some(id), Some(type_name_pair)) = (kv.next(), kv.next())
-                    {
-                        let field_type = parse_type_name(type_name_pair);
-                        fields.insert(id.as_str().to_string(), field_type);
+
+            while let Some(current) = inner.next() {
+                match current.as_rule() {
+                    Rule::decay_opt => {
+                        decay_after_ms = current
+                            .into_inner()
+                            .next()
+                            .and_then(|p| p.as_str().parse::<u64>().ok());
+                    }
+                    Rule::scoped_opt => {
+                        scoped_branch = current
+                            .into_inner()
+                            .next()
+                            .map(|p| p.as_str().to_string());
+                    }
+                    Rule::type_field_list => {
+                        for field_pair in current.into_inner() {
+                            let mut kv = field_pair.into_inner();
+                            if let (Some(id), Some(type_name_pair)) =
+                                (kv.next(), kv.next())
+                            {
+                                let field_type = parse_type_name(type_name_pair);
+                                fields.insert(id.as_str().to_string(), field_type);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Statement::TypeDecl {
+                name,
+                fields,
+                decay_after_ms,
+                scoped_branch,
+            }
+        }
+        Rule::assert_time_stmt => {
+            let mut inner = pair.into_inner();
+            let op_str = inner.next().map(|p| p.as_str()).unwrap_or("==");
+            let operator = match op_str {
+                "==" => BinaryOperator::Eq,
+                "!=" => BinaryOperator::Neq,
+                "<" => BinaryOperator::Lt,
+                ">" => BinaryOperator::Gt,
+                "<=" => BinaryOperator::Le,
+                ">=" => BinaryOperator::Ge,
+                _ => BinaryOperator::Eq,
+            };
+            let limit_ms = inner
+                .next()
+                .and_then(|p| p.as_str().parse::<u64>().ok())
+                .unwrap_or(0);
+
+            let mut fallback = None;
+            if let Some(fb_pair) = inner.next() {
+                let mut body = Vec::new();
+                for stmt_pair in fb_pair.into_inner() {
+                    if stmt_pair.as_rule() == Rule::statement {
+                        if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    } else if stmt_pair.as_rule() == Rule::statement_block {
+                        for inner_stmt in stmt_pair.into_inner() {
+                            if inner_stmt.as_rule() == Rule::statement {
+                                if let Some(actual_stmt) =
+                                    inner_stmt.into_inner().next()
+                                {
+                                    body.push(parse_statement(actual_stmt));
+                                }
+                            }
+                        }
+                    }
+                }
+                fallback = Some(body);
+            }
+
+            Statement::AssertTime {
+                operator,
+                limit_ms,
+                fallback,
+            }
+        }
+        Rule::decay_handler_stmt => {
+            let mut inner = pair.into_inner();
+            let type_name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut body = Vec::new();
+            for stmt_pair in inner {
+                if stmt_pair.as_rule() == Rule::statement {
+                    if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                        body.push(parse_statement(actual_stmt));
                     }
                 }
             }
-            Statement::TypeDecl { name, fields }
+            Statement::DecayHandler { type_name, body }
         }
         Rule::open_chan_stmt => {
             let mut inner = pair.into_inner();

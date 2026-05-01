@@ -1,5 +1,5 @@
 use crate::frontend::ast::{
-    Capability, EntropyMode, Expression, MergeResolution, ParamMode,
+    BinaryOperator, Capability, EntropyMode, Expression, MergeResolution, ParamMode,
     ResolutionStrategy, SpeculationCommitMode, Statement, TimeCoordinate,
 };
 use crate::runtime::gc::GarbageCollector;
@@ -181,8 +181,44 @@ pub(crate) fn execute_statement_inner(
         Statement::SpeculationMode(mode) => {
             vm.speculative_commit_mode = *mode;
         }
-        Statement::TypeDecl { .. } => {
-            // Type declarations are a compile-time construct only.
+        Statement::TypeDecl {
+            name,
+            decay_after_ms,
+            ..
+        } => {
+            vm.type_decay_limits.insert(name.clone(), *decay_after_ms);
+        }
+        Statement::DecayHandler { type_name, body } => {
+            vm.decay_handlers.insert(type_name.clone(), body.clone());
+        }
+        Statement::AssertTime {
+            operator,
+            limit_ms,
+            fallback,
+        } => {
+            let current_clock = vm.get_branch_mut(branch_id)?.local_clock;
+            let condition = match operator {
+                BinaryOperator::Eq => current_clock == *limit_ms,
+                BinaryOperator::Neq => current_clock != *limit_ms,
+                BinaryOperator::Lt => current_clock < *limit_ms,
+                BinaryOperator::Gt => current_clock > *limit_ms,
+                BinaryOperator::Le => current_clock <= *limit_ms,
+                BinaryOperator::Ge => current_clock >= *limit_ms,
+                BinaryOperator::Add
+                | BinaryOperator::Sub
+                | BinaryOperator::Mul
+                | BinaryOperator::Div => false,
+            };
+
+            if !condition {
+                if let Some(fb_body) = fallback {
+                    for fb_stmt in fb_body {
+                        vm.execute_statement(branch_id, fb_stmt)?;
+                    }
+                } else {
+                    return Err(TemporalError::AssertionFailed);
+                }
+            }
         }
         Statement::AcausalReset {
             target,
@@ -439,7 +475,22 @@ pub(crate) fn execute_statement_inner(
                 ));
             }
         }
-        Statement::Assignment { target, expr, .. } => {
+        Statement::Assignment {
+            target,
+            expr,
+            var_type,
+            ..
+        } => {
+            let type_name = var_type.as_ref().and_then(|t| match t {
+                crate::frontend::ast::TypeName::Custom(name) => Some(name.clone()),
+                _ => None,
+            });
+
+            let decay_after_ms = type_name
+                .as_ref()
+                .and_then(|name| vm.type_decay_limits.get(name).cloned())
+                .flatten();
+
             if let Expression::Deferred {
                 capability,
                 params,
@@ -463,26 +514,37 @@ pub(crate) fn execute_statement_inner(
                     deadline_at,
                 };
 
-                branch
-                    .arena
-                    .insert(target.clone(), EntropicState::Pending(request))?;
+                let meta = crate::runtime::memory::ValueMetadata {
+                    instantiated_at: requested_at,
+                    type_name,
+                    decay_after_ms,
+                };
 
-                if let Some(ctx) = vm.speculation_stack.last_mut() {
-                    if ctx.in_commit_block {
-                        ctx.commit_vars.insert(target.clone());
-                    }
-                }
+                branch.arena.insert_with_metadata(
+                    target.clone(),
+                    EntropicState::Pending(request),
+                    meta,
+                )?;
             } else {
                 let payload = vm.evaluate_expression(branch_id, expr)?;
-                if let Some(ctx) = vm.speculation_stack.last_mut() {
-                    if ctx.in_commit_block {
-                        ctx.commit_vars.insert(target.clone());
-                    }
-                }
                 let branch = vm.get_branch_mut(branch_id)?;
-                branch
-                    .arena
-                    .insert(target.clone(), EntropicState::Valid(payload))?;
+                let meta = crate::runtime::memory::ValueMetadata {
+                    instantiated_at: branch.local_clock,
+                    type_name,
+                    decay_after_ms,
+                };
+
+                branch.arena.insert_with_metadata(
+                    target.clone(),
+                    EntropicState::Valid(payload),
+                    meta,
+                )?;
+            }
+
+            if let Some(ctx) = vm.speculation_stack.last_mut() {
+                if ctx.in_commit_block {
+                    ctx.commit_vars.insert(target.clone());
+                }
             }
         }
         Statement::Split { parent, branches } => {

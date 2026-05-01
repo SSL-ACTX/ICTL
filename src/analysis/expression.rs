@@ -14,7 +14,31 @@ pub(crate) fn infer_expression_type(
         Expression::Integer(_) => Ok(Type::Integer),
         Expression::Literal(_) => Ok(Type::String),
         Expression::Identifier(name) => match analyzer.get_variable_type(name) {
-            Some(typ) => Ok(typ),
+            Some(typ) => {
+                let resolved_t = analyzer.resolve_type(&typ);
+                if let Type::Struct(s) = resolved_t {
+                    if let Some(decay_ms) = s.decay_after_ms {
+                        let branch = analyzer
+                            .branch_contexts
+                            .get(&analyzer.current_branch)
+                            .unwrap();
+                        let instantiated_at =
+                            branch.instantiated_at.get(name).cloned().unwrap_or(0);
+                        let current_cost = branch.accumulated_cost;
+                        if current_cost > instantiated_at + decay_ms {
+                            return Err(analyzer.annotate(
+                                SemanticErrorKind::UsedDecayedValue(
+                                    name.clone(),
+                                    decay_ms,
+                                    instantiated_at,
+                                    current_cost,
+                                ),
+                            ));
+                        }
+                    }
+                }
+                Ok(typ)
+            }
             None => Err(analyzer
                 .annotate(SemanticErrorKind::UndefinedVariable(name.to_string()))),
         },
@@ -23,7 +47,11 @@ pub(crate) fn infer_expression_type(
             for (k, v) in fields {
                 schema.insert(k.clone(), infer_expression_type(analyzer, v)?);
             }
-            Ok(Type::Struct(schema))
+            Ok(Type::Struct(crate::analysis::types::StructType {
+                fields: schema,
+                decay_after_ms: None,
+                scoped_branch: None,
+            }))
         }
         Expression::TopologyLit(fields) => {
             let mut schema = std::collections::HashMap::new();
@@ -62,7 +90,13 @@ pub(crate) fn infer_expression_type(
             let resolved_t = analyzer.resolve_type(&t);
             match resolved_t {
                 Type::Unknown => Ok(Type::Unknown),
-                Type::Struct(fields) | Type::Topology(fields) => {
+                Type::Struct(s) => s.fields.get(field).cloned().ok_or_else(|| {
+                    analyzer.annotate(SemanticErrorKind::TypeMismatch(format!(
+                        "field '{}' not found",
+                        field
+                    )))
+                }),
+                Type::Topology(fields) => {
                     fields.get(field).cloned().ok_or_else(|| {
                         analyzer.annotate(SemanticErrorKind::TypeMismatch(format!(
                             "field '{}' not found",

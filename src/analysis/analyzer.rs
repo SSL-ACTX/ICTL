@@ -1,5 +1,5 @@
 // src/analysis/analyzer.rs
-use crate::analysis::types::Type;
+use crate::analysis::types::{StructType, Type};
 use crate::frontend::ast::*;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -11,6 +11,10 @@ use crate::analysis::statement;
 pub enum SemanticErrorKind {
     #[error("Compile-Time Entropic Violation: '{0}' has been consumed or decayed and cannot be moved/reused.")]
     UseAfterConsume(String),
+    #[error("Entropy Violation: Variable '{0}' has decayed after {1}ms (instantiated at {2}ms, currently at {3}ms)")]
+    UsedDecayedValue(String, u64, u64, u64),
+    #[error("Timeline Violation: Variable '{0}' is scoped to branch '@{1}' and cannot be moved to branch '@{2}'.")]
+    InvalidTimelineMove(String, String, String),
     #[error("Merge Collision: Variable '{0}' produced in multiple branches requires a resolution strategy.")]
     UnresolvedMerge(String),
     #[error("Branch Leak: Variable '{0}' is consumed in one branch but accessed in a parallel timeline.")]
@@ -37,6 +41,8 @@ pub enum SemanticErrorKind {
     InvalidStructuralAccess(String),
     #[error("Capability violation: Required capability '{0}' is not declared in this isolate.")]
     MissingCapability(String),
+    #[error("Temporal Assertion Violation: WCET to this point is {0}ms, which exceeds the limit of {1}ms")]
+    TemporalAssertionViolation(u64, u64),
     #[error("Chaos Mode enabled: Rewinds and anchors are disabled because non-deterministic entropy was requested.")]
     ChaosModePreventsRewind,
 }
@@ -88,6 +94,8 @@ pub struct BranchState {
     pub mutables: HashSet<String>,
     pub types: HashMap<String, Type>,
     pub custom_types: HashMap<String, Type>,
+    pub accumulated_cost: u64,
+    pub instantiated_at: HashMap<String, u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -283,13 +291,17 @@ impl EntropicAnalyzer {
             Type::Custom(name) => self
                 .get_custom_type(name)
                 .unwrap_or(Type::Custom(name.clone())),
-            Type::Struct(fields) => {
-                let resolved_fields: std::collections::HashMap<String, Type> =
-                    fields
-                        .iter()
-                        .map(|(k, v)| (k.clone(), self.resolve_type(v)))
-                        .collect();
-                Type::Struct(resolved_fields)
+            Type::Struct(s) => {
+                let resolved_fields: std::collections::HashMap<String, Type> = s
+                    .fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), self.resolve_type(v)))
+                    .collect();
+                Type::Struct(StructType {
+                    fields: resolved_fields,
+                    decay_after_ms: s.decay_after_ms,
+                    scoped_branch: s.scoped_branch.clone(),
+                })
             }
             Type::Topology(fields) => {
                 let resolved_fields: std::collections::HashMap<String, Type> =
@@ -341,11 +353,11 @@ impl EntropicAnalyzer {
             (Type::Integer, Type::Integer)
             | (Type::Bool, Type::Bool)
             | (Type::String, Type::String) => true,
-            (Type::Struct(exp_fields), Type::Struct(act_fields)) => {
-                if exp_fields.is_empty() {
+            (Type::Struct(exp_struct), Type::Struct(act_struct)) => {
+                if exp_struct.fields.is_empty() {
                     true
                 } else {
-                    exp_fields == act_fields
+                    exp_struct.fields == act_struct.fields
                 }
             }
             (Type::Topology(exp_fields), Type::Topology(act_fields)) => {

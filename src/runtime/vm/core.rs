@@ -21,12 +21,15 @@ impl Vm {
             channels: HashMap::new(),
             pending_channels: HashMap::new(),
             routines: HashMap::new(),
+            decay_handlers: HashMap::new(),
+            type_decay_limits: HashMap::new(),
             speculation_stack: Vec::new(),
             speculative_commit_mode: SpeculationCommitMode::Selective,
             entanglements: Vec::new(),
             causal_history: Vec::new(),
             next_payload_id: 0,
             trace_entropy: false,
+            is_decaying: false,
         }
     }
 
@@ -55,6 +58,36 @@ impl Vm {
             branch.local_clock += 1;
         }
 
+        // Check for auto-decay
+        if !self.is_decaying {
+            self.is_decaying = true;
+            let mut to_decay = Vec::new();
+            {
+                let branch = self.get_branch_mut(branch_id)?;
+                for (name, meta) in &branch.arena.metadata {
+                    if let Some(decay_limit) = meta.decay_after_ms {
+                        if branch.local_clock > meta.instantiated_at + decay_limit {
+                            // Only decay if it's currently Valid
+                            if let Some(
+                                crate::runtime::memory::EntropicState::Valid(_),
+                            ) = branch.arena.bindings.get(name)
+                            {
+                                to_decay.push(name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            for name in to_decay {
+                if let Err(e) = self.decay_variable(branch_id, &name) {
+                    self.is_decaying = false;
+                    return Err(e);
+                }
+            }
+            self.is_decaying = false;
+        }
+
         let result = self.execute_statement_inner(branch_id, stmt);
 
         if self.trace_entropy {
@@ -69,6 +102,34 @@ impl Vm {
         }
 
         result
+    }
+
+    pub(crate) fn decay_variable(
+        &mut self,
+        branch_id: &str,
+        name: &str,
+    ) -> Result<(), TemporalError> {
+        let meta = {
+            let branch = self.get_branch_mut(branch_id)?;
+            branch.arena.metadata.get(name).cloned()
+        };
+
+        if let Some(meta) = meta {
+            if let Some(type_name) = meta.type_name {
+                if let Some(body) = self.decay_handlers.get(&type_name).cloned() {
+                    for stmt in body {
+                        self.execute_statement(branch_id, &stmt)?;
+                    }
+                }
+            }
+        }
+
+        let branch = self.get_branch_mut(branch_id)?;
+        branch
+            .arena
+            .decay(name)
+            .map_err(TemporalError::MemoryFault)?;
+        Ok(())
     }
 
     pub(crate) fn execute_capability(

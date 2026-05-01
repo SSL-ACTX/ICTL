@@ -12,6 +12,17 @@ pub(crate) fn analyze_statement(
     analyzer: &mut EntropicAnalyzer,
     stmt: &SpannedStatement,
 ) -> Result<(), SemanticError> {
+    {
+        let branch = analyzer
+            .branch_contexts
+            .get_mut(&analyzer.current_branch)
+            .unwrap();
+        branch.accumulated_cost += 1;
+        if let Statement::NetworkRequest { .. } = &stmt.stmt {
+            branch.accumulated_cost += 5;
+        }
+    }
+
     match &stmt.stmt {
         Statement::RelativisticBlock { time, body } => {
             let old_branch = analyzer.current_branch.clone();
@@ -168,6 +179,16 @@ pub(crate) fn analyze_statement(
                     .collect(),
                 types: merged_types,
                 custom_types: then_end_state.custom_types.clone(),
+                accumulated_cost: then_end_state
+                    .accumulated_cost
+                    .max(else_end_state.accumulated_cost),
+                instantiated_at: {
+                    let mut merged = then_end_state.instantiated_at.clone();
+                    for (k, v) in else_end_state.instantiated_at {
+                        merged.entry(k).or_insert(v);
+                    }
+                    merged
+                },
             };
 
             analyzer.branch_contexts = previous_contexts;
@@ -192,13 +213,61 @@ pub(crate) fn analyze_statement(
                 .branch_contexts
                 .insert(analyzer.current_branch.clone(), snapshot);
         }
-        Statement::TypeDecl { name, fields } => {
+        Statement::TypeDecl {
+            name,
+            fields,
+            decay_after_ms,
+            scoped_branch,
+        } => {
             let mut schema = std::collections::HashMap::new();
             for (field_name, field_type) in fields {
                 schema.insert(field_name.clone(), Type::from_typename(field_type));
             }
-            let type_struct = Type::Struct(schema);
+            let type_struct = Type::Struct(crate::analysis::types::StructType {
+                fields: schema,
+                decay_after_ms: *decay_after_ms,
+                scoped_branch: scoped_branch.clone(),
+            });
             analyzer.set_custom_type(name, type_struct);
+        }
+        Statement::DecayHandler { body, .. } => {
+            for inner_stmt in body {
+                analyze_statement(analyzer, inner_stmt)?;
+            }
+        }
+        Statement::AssertTime {
+            operator,
+            limit_ms,
+            fallback,
+        } => {
+            let current_wcet = {
+                let branch = analyzer
+                    .branch_contexts
+                    .get(&analyzer.current_branch)
+                    .unwrap();
+                branch.accumulated_cost
+            };
+
+            let statically_violated = match operator {
+                BinaryOperator::Lt => current_wcet >= *limit_ms,
+                BinaryOperator::Le => current_wcet > *limit_ms,
+                _ => false,
+            };
+
+            if statically_violated && fallback.is_none() {
+                return Err(analyzer.annotate(
+                    SemanticErrorKind::TemporalAssertionViolation(
+                        current_wcet,
+                        *limit_ms,
+                    ),
+                ));
+            }
+
+            if let Some(fb) = fallback {
+                for inner_stmt in fb {
+                    analyze_statement(analyzer, inner_stmt)?;
+                }
+            }
         }
         Statement::Await(target) => {
             let state = analyzer
@@ -373,22 +442,6 @@ pub(crate) fn analyze_statement(
                 crate::analysis::expression::infer_expression_type(analyzer, expr)?;
             analyze_expression(analyzer, expr)?;
 
-            let state = analyzer
-                .branch_contexts
-                .get_mut(&analyzer.current_branch)
-                .unwrap();
-            if state.types.contains_key(target)
-                && !state.mutables.contains(target)
-                && !mutable
-            {
-                return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
-                    format!("cannot assign to immutable variable '{}'", target),
-                )));
-            }
-            if *mutable {
-                state.mutables.insert(target.clone());
-            }
-
             let inferred_target_type = if let Some(expected_type) = var_type {
                 crate::analysis::types::Type::from_typename(expected_type)
             } else {
@@ -400,6 +453,20 @@ pub(crate) fn analyze_statement(
             let expected_type = analyzer.resolve_type(&inferred_target_type);
             let actual_type = analyzer.resolve_type(&expr_type);
 
+            if let crate::analysis::types::Type::Struct(ref s) = expected_type {
+                if let Some(ref scope) = s.scoped_branch {
+                    if scope != &analyzer.current_branch {
+                        return Err(analyzer.annotate(
+                            SemanticErrorKind::InvalidTimelineMove(
+                                target.clone(),
+                                scope.clone(),
+                                analyzer.current_branch.clone(),
+                            ),
+                        ));
+                    }
+                }
+            }
+
             if !analyzer.types_compatible(&expected_type, &actual_type) {
                 return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
                     format!(
@@ -407,6 +474,25 @@ pub(crate) fn analyze_statement(
                         target, actual_type, expected_type
                     ),
                 )));
+            }
+
+            let state = analyzer
+                .branch_contexts
+                .get_mut(&analyzer.current_branch)
+                .unwrap();
+            state
+                .instantiated_at
+                .insert(target.clone(), state.accumulated_cost);
+            if state.types.contains_key(target)
+                && !state.mutables.contains(target)
+                && !mutable
+            {
+                return Err(analyzer.annotate(SemanticErrorKind::TypeMismatch(
+                    format!("cannot assign to immutable variable '{}'", target),
+                )));
+            }
+            if *mutable {
+                state.mutables.insert(target.clone());
             }
 
             if let Some(expected_type) = var_type {
@@ -440,6 +526,8 @@ pub(crate) fn analyze_statement(
                         mutables: parent_state.mutables.clone(),
                         types: parent_state.types.clone(),
                         custom_types: parent_state.custom_types.clone(),
+                        accumulated_cost: parent_state.accumulated_cost,
+                        instantiated_at: parent_state.instantiated_at.clone(),
                     },
                 );
             }
@@ -461,9 +549,26 @@ pub(crate) fn analyze_statement(
                         ))
                     })?;
 
-                for y in &branch_state.yields {
-                    if !all_yields.insert(y.clone()) {
-                        collisions.insert(y.clone());
+                for (var, typ) in &branch_state.types {
+                    let resolved = analyzer.resolve_type(typ);
+                    if let crate::analysis::types::Type::Struct(s) = resolved {
+                        if let Some(scope) = s.scoped_branch {
+                            if &scope != target {
+                                return Err(analyzer.annotate(
+                                    SemanticErrorKind::InvalidTimelineMove(
+                                        var.clone(),
+                                        scope.clone(),
+                                        target.clone(),
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                for item in &branch_state.yields {
+                    if !all_yields.insert(item.clone()) {
+                        collisions.insert(item.clone());
                     }
                 }
             }
@@ -779,7 +884,13 @@ pub(crate) fn analyze_statement(
                         "value".to_string(),
                         crate::analysis::types::Type::Unknown,
                     );
-                    crate::analysis::types::Type::Struct(item_fields)
+                    crate::analysis::types::Type::Struct(
+                        crate::analysis::types::StructType {
+                            fields: item_fields,
+                            decay_after_ms: None,
+                            scoped_branch: None,
+                        },
+                    )
                 }
                 crate::analysis::types::Type::Array(inner) => *inner.clone(),
                 other => other,
@@ -866,7 +977,27 @@ pub(crate) fn analyze_statement(
                 }
             }
         }
-        Statement::Entangle { .. } | Statement::ChannelOpen { .. } => {}
+        Statement::Entangle { variables } => {
+            for var in variables {
+                if let Some(typ) = analyzer.get_variable_type(var) {
+                    let resolved = analyzer.resolve_type(&typ);
+                    if let Type::Struct(s) = resolved {
+                        if let Some(scope) = s.scoped_branch {
+                            if scope != analyzer.current_branch {
+                                return Err(analyzer.annotate(
+                                    SemanticErrorKind::InvalidTimelineMove(
+                                        var.clone(),
+                                        scope.clone(),
+                                        analyzer.current_branch.clone(),
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Statement::ChannelOpen { .. } => {}
         Statement::Capability(cap) => {
             if !analyzer.is_capability_allowed(&cap.path) {
                 return Err(analyzer.annotate(
@@ -994,6 +1125,13 @@ pub fn estimate_statement_cost(
         Statement::Break => 0,
         Statement::Entangle { .. } => 0,
         Statement::TypeDecl { .. } => 0,
+        Statement::DecayHandler { body, .. } => estimate_block_cost(analyzer, body),
+        Statement::AssertTime { fallback, .. } => {
+            1 + fallback
+                .as_ref()
+                .map(|b| estimate_block_cost(analyzer, b))
+                .unwrap_or(0)
+        }
         Statement::RoutineDef { taking_ms, .. } => taking_ms.unwrap_or(0),
     };
     base + extra

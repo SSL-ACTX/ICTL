@@ -1,0 +1,25 @@
+@0ms: {
+    let x = 1
+    let y = 2
+    // Current WCET should be ~3ms (1 for x, 1 for y, 1 for next)
+    assert_time(elapsed < 10ms)
+    
+    // This should fail static analysis if limit is too low
+    assert_time(elapsed < 20ms) 
+
+    type SessionToken = struct decay_after 2ms {
+        id: int
+    }
+    
+    decay_handler for SessionToken {
+        print("ALERT: Session token has decayed!")
+    }
+
+    let token : SessionToken = struct { id = 123 }
+    
+    let a = 1
+    let b = 2
+    let c = 3 // total 3ms since token, should trigger decay
+    
+    // We can't use token.id here because it's decayed, but the handler should have run.
+}

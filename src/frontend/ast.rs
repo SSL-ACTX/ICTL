@@ -85,6 +85,17 @@ pub enum Statement {
     TypeDecl {
         name: String,
         fields: HashMap<String, TypeName>,
+        decay_after_ms: Option<u64>,
+        scoped_branch: Option<String>,
+    },
+    DecayHandler {
+        type_name: String,
+        body: Vec<SpannedStatement>,
+    },
+    AssertTime {
+        operator: BinaryOperator,
+        limit_ms: u64,
+        fallback: Option<Vec<SpannedStatement>>,
     },
     #[allow(dead_code)]
     Send {
