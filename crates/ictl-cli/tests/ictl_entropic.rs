@@ -35,19 +35,21 @@ fn ictl_entropic_struct_field_access_leads_to_decay() -> anyhow::Result<()> {
     let mut analyzer = EntropicAnalyzer::new();
     analyzer.analyze_program(&program)?;
 
+    let ir = ictl_frontend::ir::lower_program(&program);
     let mut vm = Vm::new();
-    for stmt in &program.timelines[0].statements {
-        vm.execute_statement("main", stmt)?;
-    }
+    vm.execute_program(&ir)?;
+
+    let s_reg = ir.symbols.get("s").expect("s not found").0;
+    let a_val_reg = ir.symbols.get("a_val").expect("a_val not found").0;
 
     // With the new peek behavior, decayed structs return their remaining payload.
     // We check that it's still accessible but effectively decayed.
     assert!(
-        vm.root_timeline.arena.peek("s").is_some(),
+        vm.root_timeline.arena.peek(s_reg).is_some(),
         "parent struct should be accessible via peek even when decayed"
     );
 
-    let a_res = vm.root_timeline.arena.peek("a_val");
+    let a_res = vm.root_timeline.arena.peek(a_val_reg);
 
     match a_res {
         Some(Payload::String(a_str)) => assert_eq!(a_str, "Hello"),
@@ -82,22 +84,16 @@ fn ictl_entropic_entropic_entanglement_cross_branch() -> anyhow::Result<()> {
     let mut analyzer = EntropicAnalyzer::new();
     analyzer.analyze_program(&program)?;
 
+    let ir = ictl_frontend::ir::lower_program(&program);
     let mut vm = Vm::new();
-    // 1. let x = "shared"
-    vm.execute_statement("main", &program.timelines[0].statements[0])?;
-    // 2. entangle x
-    vm.execute_statement("main", &program.timelines[0].statements[1])?;
-    // 3. split main into [branchA, branchB]
-    vm.execute_statement("main", &program.timelines[0].statements[2])?;
+    vm.execute_program(&ir)?;
 
-    // 4. In branchA, consume x
-    vm.execute_statement("branchA", &program.timelines[0].statements[3])?;
-
-    // 5. In branchB, check if x is dead
-    vm.execute_statement("branchB", &program.timelines[0].statements[4])?;
-
-    let branch_b = vm.active_branches.get("branchB").unwrap();
-    let status = branch_b.arena.peek("status");
+    let branch_b = vm
+        .active_branches
+        .get("branchB")
+        .expect("branchB should exist");
+    let status_reg = ir.symbols.get("status").expect("status not found").0;
+    let status = branch_b.arena.peek(status_reg);
     match status {
         Some(Payload::String(s)) => assert_eq!(s, "dead"),
         _ => panic!(
@@ -133,25 +129,16 @@ fn ictl_entropic_entropic_entanglement_field_decay() -> anyhow::Result<()> {
     "#;
 
     let program = parser::parse_ictl(source)?;
+    let ir = ictl_frontend::ir::lower_program(&program);
     let mut analyzer = EntropicAnalyzer::new();
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
-    // 1. let p = ...
-    vm.execute_statement("main", &program.timelines[0].statements[0])?;
-    // 2. entangle(p)
-    vm.execute_statement("main", &program.timelines[0].statements[1])?;
-    // 3. split
-    vm.execute_statement("main", &program.timelines[0].statements[2])?;
-
-    // 4. In branchA, let val = p.a
-    vm.execute_statement("branchA", &program.timelines[0].statements[3])?;
-
-    // 5. In branchB, check status
-    vm.execute_statement("branchB", &program.timelines[0].statements[4])?;
+    vm.execute_program(&ir)?;
 
     let branch_b = vm.active_branches.get("branchB").unwrap();
-    let status = branch_b.arena.peek("status");
+    let status_reg = ir.symbols.get("status").expect("status not found").0;
+    let status = branch_b.arena.peek(status_reg);
     match status {
         Some(Payload::String(s)) => assert_eq!(s, "decayed"),
         _ => panic!("Expected status='decayed', got {:?}", status),
@@ -187,20 +174,18 @@ fn ictl_entropic_topology_routing() -> anyhow::Result<()> {
     "#;
 
     let program = parser::parse_ictl(source)?;
+    let ir = ictl_frontend::ir::lower_program(&program);
     let mut analyzer = EntropicAnalyzer::new();
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
-    // execute everything
-    for tl in &program.timelines {
-        for stmt in &tl.statements {
-            vm.execute_statement("main", stmt)?;
-        }
-    }
+    vm.execute_program(&ir)?;
 
     let branch_w2 = vm.active_branches.get("w2").unwrap();
-    let check1 = branch_w2.arena.peek("check1");
-    let check2 = branch_w2.arena.peek("check2");
+    let check1_reg = ir.symbols.get("check1").expect("check1 not found").0;
+    let check2_reg = ir.symbols.get("check2").expect("check2 not found").0;
+    let check1 = branch_w2.arena.peek(check1_reg);
+    let check2 = branch_w2.arena.peek(check2_reg);
 
     match check1 {
         Some(Payload::String(s)) => assert_eq!(s, "offline"),
@@ -251,24 +236,25 @@ fn ictl_entropic_topographical_merge_union() -> anyhow::Result<()> {
     "#;
 
     let program = parser::parse_ictl(source)?;
+    let ir = ictl_frontend::ir::lower_program(&program);
+
+    for (i, block) in ir.blocks.iter().enumerate() {
+        println!("Block {}: {:?}", i, block.instructions);
+    }
+
     let mut analyzer = EntropicAnalyzer::new();
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
-    for timeline in &program.timelines {
-        let branch = match &timeline.time {
-            ictl_core::TimeCoordinate::Global(_) => "main",
-            ictl_core::TimeCoordinate::Relative(_) => "main",
-            ictl_core::TimeCoordinate::Branch(name) => name.as_str(),
-        };
-
-        for stmt in &timeline.statements {
-            vm.execute_statement(branch, stmt)?;
-        }
-    }
+    vm.execute_program(&ir)?;
 
     // final_status should be "upgrading"
-    let status_val = vm.root_timeline.arena.peek("final_status");
+    let status_reg = ir
+        .symbols
+        .get("final_status")
+        .expect("final_status not found")
+        .0;
+    let status_val = vm.root_timeline.arena.peek(status_reg);
     match status_val {
         Some(Payload::String(s)) => assert_eq!(s, "upgrading"),
         _ => panic!("Expected upgrading status, got {:?}", status_val),
@@ -313,6 +299,7 @@ fn ictl_entropic_topographical_merge_union_on_invalid_clause() -> anyhow::Result
     "#;
 
     let program = parser::parse_ictl(source)?;
+    let ir = ictl_frontend::ir::lower_program(&program);
 
     // Verify AST parse of `on_invalid` rewinding behavior into topology_union
     let merge_stmt = &program.timelines[2].statements[0].stmt;
@@ -340,19 +327,14 @@ fn ictl_entropic_topographical_merge_union_on_invalid_clause() -> anyhow::Result
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
-    for timeline in &program.timelines {
-        let branch = match &timeline.time {
-            ictl_core::TimeCoordinate::Global(_) => "main",
-            ictl_core::TimeCoordinate::Relative(_) => "main",
-            ictl_core::TimeCoordinate::Branch(name) => name.as_str(),
-        };
+    vm.execute_program(&ir)?;
 
-        for stmt in &timeline.statements {
-            vm.execute_statement(branch, stmt)?;
-        }
-    }
-
-    let status_val = vm.root_timeline.arena.peek("final_status");
+    let status_reg = ir
+        .symbols
+        .get("final_status")
+        .expect("final_status not found")
+        .0;
+    let status_val = vm.root_timeline.arena.peek(status_reg);
     match status_val {
         Some(Payload::String(s)) => assert_eq!(s, "upgrading"),
         _ => panic!("Expected upgrading status, got {:?}", status_val),

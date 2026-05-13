@@ -156,8 +156,12 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
         ),
         Rule::struct_lit | Rule::topology_lit => {
             let rule = pair.as_rule();
+            let mut inner = pair.into_inner();
+
+            let (type_name, params_pair) = (None, inner.next());
+
             let mut fields = HashMap::new();
-            if let Some(params) = pair.into_inner().next() {
+            if let Some(params) = params_pair {
                 for p in params.into_inner() {
                     let mut p_inner = p.into_inner();
                     if let (Some(k), Some(v)) = (p_inner.next(), p_inner.next()) {
@@ -169,7 +173,7 @@ pub(crate) fn parse_expression(pair: pest::iterators::Pair<Rule>) -> Expression 
                 }
             }
             if rule == Rule::struct_lit {
-                Expression::StructLit(fields)
+                Expression::StructLit(type_name, fields)
             } else {
                 Expression::TopologyLit(fields)
             }

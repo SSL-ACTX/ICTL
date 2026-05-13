@@ -213,8 +213,8 @@ pub struct ValueMetadata {
 pub struct Arena {
     pub capacity: u64,
     pub used: u64,
-    pub bindings: HashMap<String, EntropicState>,
-    pub metadata: HashMap<String, ValueMetadata>,
+    pub registers: Vec<EntropicState>,
+    pub metadata: Vec<Option<ValueMetadata>>,
 }
 
 impl Arena {
@@ -222,29 +222,30 @@ impl Arena {
         Self {
             capacity,
             used: 0,
-            bindings: HashMap::new(),
-            metadata: HashMap::new(),
+            registers: Vec::new(),
+            metadata: Vec::new(),
         }
     }
 
-    /// Helper to calculate the overhead of a key in the bindings map.
-    fn key_weight(key: &str) -> u64 {
-        key.len() as u64 + 32 // key string + map node overhead
+    fn ensure_register(&mut self, reg: u32) {
+        let idx = reg as usize;
+        if idx >= self.registers.len() {
+            self.registers.resize(idx + 1, EntropicState::Consumed);
+            self.metadata.resize(idx + 1, None);
+        }
     }
 
     /// Checks and reserves memory before insertion
     pub fn insert(
         &mut self,
-        identifier: String,
+        reg: u32,
         state: EntropicState,
     ) -> Result<(), MemoryError> {
+        self.ensure_register(reg);
+        let idx = reg as usize;
         let mut potential_used = self.used;
 
-        if let Some(previous) = self.bindings.get(&identifier) {
-            potential_used = potential_used.saturating_sub(previous.weight());
-        } else {
-            potential_used += Self::key_weight(&identifier);
-        }
+        potential_used = potential_used.saturating_sub(self.registers[idx].weight());
 
         let state_weight = state.weight();
         if potential_used + state_weight > self.capacity {
@@ -255,48 +256,44 @@ impl Arena {
         }
 
         self.used = potential_used + state_weight;
-        self.bindings.insert(identifier.clone(), state);
-        self.metadata.remove(&identifier); // Clear old metadata
+        self.registers[idx] = state;
+        self.metadata[idx] = None; // Clear old metadata
         Ok(())
     }
 
     pub fn insert_with_metadata(
         &mut self,
-        identifier: String,
+        reg: u32,
         state: EntropicState,
         meta: ValueMetadata,
     ) -> Result<(), MemoryError> {
-        self.insert(identifier.clone(), state)?;
-        self.metadata.insert(identifier, meta);
+        self.insert(reg, state)?;
+        self.metadata[reg as usize] = Some(meta);
         Ok(())
     }
 
     /// Drop all arena state immediately for deterministic bulk deallocation.
     pub fn clear(&mut self) {
-        self.bindings.clear();
+        self.registers.clear();
         self.metadata.clear();
         self.used = 0;
     }
 
     /// Optionally compact consumed entries at branch boundaries.
     pub fn compact_consumed(&mut self) {
+        // In a register VM, we don't "compact" the Vec as indices must remain stable.
+        // We just recalculate used memory.
         let mut new_used = 0;
-        self.bindings.retain(|k, v| {
-            if matches!(v, EntropicState::Consumed) {
-                false
-            } else {
-                new_used += Self::key_weight(k) + v.weight();
-                true
-            }
-        });
+        for reg in &self.registers {
+            new_used += reg.weight();
+        }
         self.used = new_used;
     }
 
-    pub fn consume(&mut self, identifier: &str) -> Result<Payload, MemoryError> {
-        let state = self
-            .bindings
-            .get(identifier)
-            .ok_or(MemoryError::AlreadyConsumed)?;
+    pub fn consume(&mut self, reg: u32) -> Result<Payload, MemoryError> {
+        self.ensure_register(reg);
+        let idx = reg as usize;
+        let state = &self.registers[idx];
         match state {
             EntropicState::Valid(payload) => {
                 let payload = payload.clone();
@@ -308,7 +305,7 @@ impl Arena {
                     .used
                     .saturating_sub(old_weight)
                     .saturating_add(new_weight);
-                self.bindings.insert(identifier.to_string(), new_state);
+                self.registers[idx] = new_state;
                 Ok(payload)
             }
             EntropicState::Decayed(_) => Err(MemoryError::StructurallyDecayed),
@@ -319,12 +316,16 @@ impl Arena {
     /// Moves the entropic state out of the arena, replacing it with Consumed.
     pub fn consume_entropic(
         &mut self,
-        identifier: &str,
+        reg: u32,
     ) -> Result<EntropicState, MemoryError> {
-        let state = self
-            .bindings
-            .remove(identifier)
-            .ok_or(MemoryError::AlreadyConsumed)?;
+        self.ensure_register(reg);
+        let idx = reg as usize;
+        let state =
+            std::mem::replace(&mut self.registers[idx], EntropicState::Consumed);
+
+        if matches!(state, EntropicState::Consumed) {
+            return Err(MemoryError::AlreadyConsumed);
+        }
 
         let old_weight = state.weight();
         let new_state = EntropicState::Consumed;
@@ -334,16 +335,15 @@ impl Arena {
             .used
             .saturating_sub(old_weight)
             .saturating_add(new_weight);
-        self.bindings.insert(identifier.to_string(), new_state);
         Ok(state)
     }
 
     pub fn consume_field(
         &mut self,
-        parent: &str,
+        reg: u32,
         field: &str,
     ) -> Result<Payload, MemoryError> {
-        match self.consume_field_entropic(parent, field)? {
+        match self.consume_field_entropic(reg, field)? {
             EntropicState::Valid(p) => Ok(p),
             EntropicState::Decayed(_) => Err(MemoryError::StructurallyDecayed),
             _ => Err(MemoryError::AlreadyConsumed),
@@ -352,13 +352,17 @@ impl Arena {
 
     pub fn consume_field_entropic(
         &mut self,
-        parent: &str,
+        reg: u32,
         field: &str,
     ) -> Result<EntropicState, MemoryError> {
-        let state = self
-            .bindings
-            .remove(parent)
-            .ok_or(MemoryError::AlreadyConsumed)?;
+        self.ensure_register(reg);
+        let idx = reg as usize;
+        let state =
+            std::mem::replace(&mut self.registers[idx], EntropicState::Consumed);
+
+        if matches!(state, EntropicState::Consumed) {
+            return Err(MemoryError::AlreadyConsumed);
+        }
 
         let old_parent_weight = state.weight();
 
@@ -380,21 +384,25 @@ impl Arena {
                     .used
                     .saturating_sub(old_parent_weight)
                     .saturating_add(new_parent_weight);
-                self.bindings.insert(parent.to_string(), new_state);
+                self.registers[idx] = new_state;
                 Ok(field_state)
             }
             _ => {
                 // Re-insert non-struct state
-                self.bindings.insert(parent.to_string(), state);
+                self.registers[idx] = state;
                 Err(MemoryError::NotAStruct)
             }
         }
     }
 
-    pub fn peek(&self, identifier: &str) -> Option<Payload> {
-        match self.bindings.get(identifier) {
-            Some(EntropicState::Valid(payload)) => Some(payload.clone()),
-            Some(EntropicState::Decayed(fields)) => {
+    pub fn peek(&self, reg: u32) -> Option<Payload> {
+        let idx = reg as usize;
+        if idx >= self.registers.len() {
+            return None;
+        }
+        match &self.registers[idx] {
+            EntropicState::Valid(payload) => Some(payload.clone()),
+            EntropicState::Decayed(fields) => {
                 // Return as a Struct payload; some internal fields may be Consumed
                 Some(Payload::Struct(fields.clone()))
             }
@@ -402,27 +410,26 @@ impl Arena {
         }
     }
 
-    pub fn set_consumed(&mut self, identifier: &str) -> Result<(), MemoryError> {
-        if let Some(state) = self.bindings.get(identifier) {
-            let old_weight = state.weight();
-            let new_state = EntropicState::Consumed;
-            let new_weight = new_state.weight();
-            self.used = self
-                .used
-                .saturating_sub(old_weight)
-                .saturating_add(new_weight);
-            self.bindings.insert(identifier.to_string(), new_state);
-            Ok(())
-        } else {
-            Err(MemoryError::AlreadyConsumed)
-        }
+    pub fn set_consumed(&mut self, reg: u32) -> Result<(), MemoryError> {
+        self.ensure_register(reg);
+        let idx = reg as usize;
+        let state = &self.registers[idx];
+        let old_weight = state.weight();
+        let new_state = EntropicState::Consumed;
+        let new_weight = new_state.weight();
+        self.used = self
+            .used
+            .saturating_sub(old_weight)
+            .saturating_add(new_weight);
+        self.registers[idx] = new_state;
+        Ok(())
     }
 
-    pub fn decay(&mut self, identifier: &str) -> Result<(), MemoryError> {
-        let state = self
-            .bindings
-            .remove(identifier)
-            .ok_or(MemoryError::AlreadyConsumed)?;
+    pub fn decay(&mut self, reg: u32) -> Result<(), MemoryError> {
+        self.ensure_register(reg);
+        let idx = reg as usize;
+        let state =
+            std::mem::replace(&mut self.registers[idx], EntropicState::Consumed);
         let old_weight = state.weight();
 
         let new_state = match state {
@@ -439,7 +446,7 @@ impl Arena {
             .used
             .saturating_sub(old_weight)
             .saturating_add(new_weight);
-        self.bindings.insert(identifier.to_string(), new_state);
+        self.registers[idx] = new_state;
         Ok(())
     }
 
@@ -454,14 +461,18 @@ impl Arena {
 
     pub fn update_field(
         &mut self,
-        parent: &str,
+        reg: u32,
         field: &str,
         new_value: Payload,
     ) -> Result<(), MemoryError> {
-        let state = self
-            .bindings
-            .remove(parent)
-            .ok_or(MemoryError::AlreadyConsumed)?;
+        self.ensure_register(reg);
+        let idx = reg as usize;
+        let state =
+            std::mem::replace(&mut self.registers[idx], EntropicState::Consumed);
+
+        if matches!(state, EntropicState::Consumed) {
+            return Err(MemoryError::AlreadyConsumed);
+        }
 
         let old_parent_weight = state.weight();
         let is_topology =
@@ -486,8 +497,7 @@ impl Arena {
                 if self.used.saturating_sub(old_parent_weight) + new_parent_weight
                     > self.capacity
                 {
-                    self.bindings
-                        .insert(parent.to_string(), EntropicState::Consumed);
+                    self.registers[idx] = EntropicState::Consumed;
                     return Err(MemoryError::OutOfMemory(
                         new_parent_weight,
                         self.capacity - (self.used - old_parent_weight),
@@ -498,11 +508,79 @@ impl Arena {
                     .used
                     .saturating_sub(old_parent_weight)
                     .saturating_add(new_parent_weight);
-                self.bindings.insert(parent.to_string(), new_state);
+                self.registers[idx] = new_state;
                 Ok(())
             }
             _ => {
-                self.bindings.insert(parent.to_string(), state);
+                self.registers[idx] = state;
+                Err(MemoryError::NotAStruct)
+            }
+        }
+    }
+
+    pub fn update_index_field(
+        &mut self,
+        reg: u32,
+        index: &str,
+        field: &str,
+        new_value: Payload,
+    ) -> Result<(), MemoryError> {
+        println!("[DEBUG] Arena::update_index_field reg={}, index={}, field={}, value={:?}", reg, index, field, new_value);
+        self.ensure_register(reg);
+        let idx = reg as usize;
+        let state =
+            std::mem::replace(&mut self.registers[idx], EntropicState::Consumed);
+
+        if matches!(state, EntropicState::Consumed) {
+            return Err(MemoryError::AlreadyConsumed);
+        }
+
+        let old_parent_weight = state.weight();
+
+        match state {
+            EntropicState::Valid(Payload::Topology(mut fields)) => {
+                let inner_state =
+                    fields.get_mut(index).ok_or(MemoryError::AlreadyConsumed)?;
+                match inner_state {
+                    EntropicState::Valid(Payload::Struct(inner_fields))
+                    | EntropicState::Valid(Payload::Topology(inner_fields)) => {
+                        println!("[DEBUG] Found inner struct/topology at index {}, updating field {}", index, field);
+                        inner_fields.insert(
+                            field.to_string(),
+                            EntropicState::Valid(new_value),
+                        );
+                    }
+                    _ => {
+                        self.registers[idx] =
+                            EntropicState::Valid(Payload::Topology(fields));
+                        return Err(MemoryError::NotAStruct);
+                    }
+                }
+
+                let new_state = EntropicState::Valid(Payload::Topology(fields));
+                println!("[DEBUG] Successfully updated nested field");
+
+                let new_parent_weight = new_state.weight();
+                if self.used.saturating_sub(old_parent_weight) + new_parent_weight
+                    > self.capacity
+                {
+                    self.registers[idx] = EntropicState::Consumed;
+                    return Err(MemoryError::OutOfMemory(
+                        new_parent_weight,
+                        self.capacity
+                            - (self.used.saturating_sub(old_parent_weight)),
+                    ));
+                }
+
+                self.used = self
+                    .used
+                    .saturating_sub(old_parent_weight)
+                    .saturating_add(new_parent_weight);
+                self.registers[idx] = new_state;
+                Ok(())
+            }
+            _ => {
+                self.registers[idx] = state;
                 Err(MemoryError::NotAStruct)
             }
         }
@@ -510,18 +588,22 @@ impl Arena {
 
     pub fn update_deep_field(
         &mut self,
-        root: &str,
+        reg: u32,
         path: &[String],
         new_value: Payload,
     ) -> Result<(), MemoryError> {
         if path.len() == 1 {
-            return self.update_field(root, &path[0], new_value);
+            return self.update_field(reg, &path[0], new_value);
         }
 
-        let state = self
-            .bindings
-            .remove(root)
-            .ok_or(MemoryError::AlreadyConsumed)?;
+        self.ensure_register(reg);
+        let idx = reg as usize;
+        let state =
+            std::mem::replace(&mut self.registers[idx], EntropicState::Consumed);
+
+        if matches!(state, EntropicState::Consumed) {
+            return Err(MemoryError::AlreadyConsumed);
+        }
 
         let old_weight = state.weight();
         let is_topology =
@@ -545,8 +627,7 @@ impl Arena {
                 let new_weight = final_state.weight();
                 if self.used.saturating_sub(old_weight) + new_weight > self.capacity
                 {
-                    self.bindings
-                        .insert(root.to_string(), EntropicState::Consumed);
+                    self.registers[idx] = EntropicState::Consumed;
                     return Err(MemoryError::OutOfMemory(
                         new_weight,
                         self.capacity - (self.used - old_weight),
@@ -557,11 +638,11 @@ impl Arena {
                     .used
                     .saturating_sub(old_weight)
                     .saturating_add(new_weight);
-                self.bindings.insert(root.to_string(), final_state);
+                self.registers[idx] = final_state;
                 Ok(())
             }
             _ => {
-                self.bindings.insert(root.to_string(), state);
+                self.registers[idx] = state;
                 Err(MemoryError::NotAStruct)
             }
         }

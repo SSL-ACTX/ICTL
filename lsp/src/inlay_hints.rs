@@ -113,12 +113,12 @@ mod tests {
     use crate::analysis_worker::AnalysisResults;
     use dashmap::DashMap;
     use ictl_analysis::analyzer::EntropicAnalyzer;
-    use ictl_core::*;
+
     use tower_lsp::lsp_types::Url;
 
     #[tokio::test]
     async fn handle_inlay_hints_with_missing_source_does_not_panic() {
-        let mut cache = DashMap::new();
+        let cache = DashMap::new();
         let program = Program {
             timelines: vec![TimelineBlock {
                 time: TimeCoordinate::Global(0),

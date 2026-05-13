@@ -64,7 +64,7 @@ mod tests {
 
     #[tokio::test]
     async fn handle_hover_with_missing_source_does_not_panic() {
-        let mut cache = DashMap::new();
+        let cache = DashMap::new();
         let program = Program {
             timelines: vec![TimelineBlock {
                 time: TimeCoordinate::Global(0),

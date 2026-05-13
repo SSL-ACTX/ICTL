@@ -49,6 +49,7 @@ statement = {
     | network_request_stmt
     | entangle_stmt
     | field_update_stmt
+    | slice_stmt
 }
 
 entangle_stmt = { "entangle" ~ "(" ~ identifier_list ~ ")" }

@@ -71,15 +71,15 @@ fn ictl_isochronous_tick_loop_double_buffered_channels() -> anyhow::Result<()> {
     "#;
 
     let program = parser::parse_ictl(source)?;
+    let ir = ictl_frontend::ir::lower_program(&program);
     let mut analyzer = EntropicAnalyzer::new();
     analyzer.analyze_program(&program)?;
 
     let mut vm = Vm::new();
-    for stmt in &program.timelines[0].statements {
-        vm.execute_statement("main", stmt)?;
-    }
+    vm.execute_program(&ir)?;
 
-    match vm.root_timeline.arena.peek("out") {
+    let out_reg = ir.symbols.get("out").expect("out not found").0;
+    match vm.root_timeline.arena.peek(out_reg) {
         Some(Payload::Integer(v)) => assert_eq!(v, 42),
         _ => panic!("Expected out=42"),
     }

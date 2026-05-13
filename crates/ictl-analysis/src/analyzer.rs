@@ -495,7 +495,7 @@ impl EntropicAnalyzer {
                 format!("{}.{}", self.expr_snippet(target), field)
             }
             Expression::CloneOp(v) => format!("clone({})", v),
-            Expression::StructLit(fields) => {
+            Expression::StructLit(_, fields) => {
                 let parts: Vec<String> = fields
                     .iter()
                     .map(|(k, v)| format!("{} = {}", k, self.expr_snippet(v)))

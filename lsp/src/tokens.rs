@@ -32,8 +32,6 @@ pub async fn handle_tokens(
             for stmt in &timeline.statements {
                 let state = results.analyzer.span_states.get(&stmt.span);
 
-                // For each statement, we walk its expressions to find identifiers
-                // This is a simplified visitor
                 walk_statement(
                     stmt,
                     state,
@@ -50,60 +48,6 @@ pub async fn handle_tokens(
         result_id: None,
         data: tokens,
     })))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::analysis_worker::AnalysisResults;
-    use dashmap::DashMap;
-    use ictl_analysis::analyzer::EntropicAnalyzer;
-    use ictl_core::*;
-    use tower_lsp::lsp_types::Url;
-
-    #[tokio::test]
-    async fn handle_tokens_with_missing_source_does_not_panic() {
-        let mut cache = DashMap::new();
-        let program = Program {
-            timelines: vec![TimelineBlock {
-                time: TimeCoordinate::Global(0),
-                statements: vec![SpannedStatement {
-                    stmt: Statement::Expression(Expression::Identifier(
-                        "x".to_string(),
-                    )),
-                    span: Span { start: 0, end: 1 },
-                }],
-            }],
-        };
-
-        cache.insert(
-            Url::parse("file:///tmp/test.ictl").unwrap(),
-            AnalysisResults {
-                diagnostics: vec![],
-                program: Some(program),
-                analyzer: EntropicAnalyzer::new(),
-                source: None,
-            },
-        );
-
-        let result = handle_tokens(
-            SemanticTokensParams {
-                text_document: TextDocumentIdentifier {
-                    uri: Url::parse("file:///tmp/test.ictl").unwrap(),
-                },
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-            },
-            &cache,
-        )
-        .await
-        .unwrap();
-
-        match result {
-            Some(SemanticTokensResult::Tokens(t)) => assert!(t.data.is_empty()),
-            _ => panic!("Expected tokens result"),
-        }
-    }
 }
 
 fn walk_statement(
@@ -132,9 +76,7 @@ fn walk_statement(
             walk_expression(
                 condition, &stmt.span, state, tokens, last_line, last_start, source,
             );
-            // Internal branches are handled in the main loop
         }
-        // ... add more as needed
         _ => {}
     }
 }
@@ -174,7 +116,7 @@ fn walk_expression(
                 target, span, state, tokens, last_line, last_start, source,
             );
         }
-        Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
+        Expression::StructLit(_, fields) | Expression::TopologyLit(fields) => {
             for v in fields.values() {
                 walk_expression(
                     v, span, state, tokens, last_line, last_start, source,
@@ -194,7 +136,6 @@ fn push_variable_token(
     last_start: &mut u32,
     source: &str,
 ) {
-    // Approximate position by searching name in span text
     let text = &source[span.start..span.end];
     if let Some(offset) = text.find(name) {
         let abs_pos = span.start + offset;
@@ -211,9 +152,9 @@ fn push_variable_token(
 
         let token_type = if let Some(s) = state {
             if s.consumed.contains(name) {
-                1 // COMMENT (for gray/strikethrough)
+                1
             } else {
-                0 // VARIABLE (bright/warning)
+                0
             }
         } else {
             0
@@ -229,5 +170,59 @@ fn push_variable_token(
 
         *last_line = line;
         *last_start = col;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis_worker::AnalysisResults;
+    use dashmap::DashMap;
+    use ictl_analysis::analyzer::EntropicAnalyzer;
+
+    use tower_lsp::lsp_types::Url;
+
+    #[tokio::test]
+    async fn handle_tokens_with_missing_source_does_not_panic() {
+        let cache = DashMap::new();
+        let program = Program {
+            timelines: vec![TimelineBlock {
+                time: TimeCoordinate::Global(0),
+                statements: vec![SpannedStatement {
+                    stmt: Statement::Expression(Expression::Identifier(
+                        "x".to_string(),
+                    )),
+                    span: Span { start: 0, end: 1 },
+                }],
+            }],
+        };
+
+        cache.insert(
+            Url::parse("file:///tmp/test.ictl").unwrap(),
+            AnalysisResults {
+                diagnostics: vec![],
+                program: Some(program),
+                analyzer: EntropicAnalyzer::new(),
+                source: None,
+            },
+        );
+
+        let result = handle_tokens(
+            SemanticTokensParams {
+                text_document: TextDocumentIdentifier {
+                    uri: Url::parse("file:///tmp/test.ictl").unwrap(),
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            },
+            &cache,
+        )
+        .await
+        .unwrap();
+
+        match result {
+            Some(SemanticTokensResult::Tokens(t)) => assert!(t.data.is_empty()),
+            _ => panic!("Expected tokens result"),
+        }
     }
 }

@@ -27,7 +27,7 @@ pub enum CausalEvent {
     InterBranchMove {
         source_branch: String,
         target_branch: String,
-        var_name: String,
+        reg: u32,
         #[allow(dead_code)]
         message: Message,
     },
@@ -42,6 +42,8 @@ pub struct AnchorPoint {
     pub cpu_budget_snapshot: u64,
     pub resource_budgets_snapshot: HashMap<String, u64>,
     pub history_index: usize,
+    pub pc_snapshot: usize,
+    pub instructions_snapshot: Vec<ictl_frontend::ir::Instruction>,
 }
 
 #[derive(Clone)]
@@ -50,18 +52,21 @@ pub struct Routine {
     #[allow(dead_code)]
     pub return_type: ictl_core::types::Type,
     pub taking_ms: Option<u64>,
-    pub body: Vec<ictl_core::SpannedStatement>,
+    pub instructions: Vec<ictl_frontend::ir::Instruction>,
 }
 
-#[derive(Default)]
-pub(crate) struct SpeculationContext {
-    pub(crate) commit_vars: std::collections::HashSet<String>,
-    pub(crate) in_commit_block: bool,
-    pub(crate) commit_executed: bool,
-    pub(crate) collapse_happened: bool,
+pub struct SpeculationContext {
+    pub speculation_start_state: Timeline,
+    pub history_start_index: usize,
+    pub fallback_target: usize,
+    pub commit_vars: std::collections::HashSet<u32>,
+    pub in_commit_block: bool,
+    pub commit_executed: bool,
+    pub collapse_happened: bool,
 }
 
 pub struct Vm {
+    pub symbols: std::collections::HashMap<String, ictl_frontend::ir::Reg>,
     pub speculative_commit_mode: SpeculationCommitMode,
     pub global_clock: u64,
     pub root_timeline: Timeline,
@@ -70,14 +75,14 @@ pub struct Vm {
     pub channels: HashMap<String, VecDeque<Message>>,
     pub pending_channels: HashMap<String, VecDeque<Message>>,
     pub routines: HashMap<String, Routine>,
-    pub decay_handlers: HashMap<String, Vec<ictl_core::SpannedStatement>>,
-    pub type_decay_limits: HashMap<String, Option<u64>>,
-    pub(crate) speculation_stack: Vec<SpeculationContext>,
-    pub entanglements: Vec<std::collections::HashSet<(String, String)>>,
+    pub decay_handlers: HashMap<String, Vec<ictl_frontend::ir::Instruction>>,
+    pub type_decay_limits: HashMap<String, u64>,
+    pub speculation_stack: Vec<SpeculationContext>,
+    pub entanglements: Vec<std::collections::HashSet<(String, u32)>>,
     pub causal_history: Vec<CausalEvent>,
     pub next_payload_id: u64,
     pub trace_entropy: bool,
-    pub(crate) is_decaying: bool,
+    pub(crate) _is_decaying: bool,
 }
 
 #[derive(Clone)]
@@ -96,6 +101,9 @@ pub struct Timeline {
     pub entropy_mode: ictl_core::EntropyMode,
     pub break_requested: bool,
     pub loop_depth: u32,
+    pub loop_stack: Vec<(u64, u64)>, // (start_clock, max_ms)
+    pub pc: usize,
+    pub instructions: Vec<ictl_frontend::ir::Instruction>,
 }
 
 impl Timeline {

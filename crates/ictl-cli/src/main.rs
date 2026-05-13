@@ -1,6 +1,5 @@
 use ictl_analysis::analyzer::EntropicAnalyzer;
 use ictl_core::value::EntropicState;
-use ictl_core::TimeCoordinate;
 use ictl_frontend::ir;
 use ictl_frontend::parser;
 use ictl_runtime::vm::Vm;
@@ -122,6 +121,7 @@ fn main() -> anyhow::Result<()> {
         println!("\x1b[1;32m{}: analysis ok\x1b[0m", path.display());
 
         if run_program {
+            let ir_program = ir::lower_program(&program);
             let mut vm = Vm::new();
             vm.trace_entropy = trace_entropy;
             vm.register_capability("System.Log", |params| {
@@ -131,24 +131,12 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             });
 
-            for timeline in &program.timelines {
-                let branch = match &timeline.time {
-                    TimeCoordinate::Global(_) => "main",
-                    TimeCoordinate::Relative(_) => "main",
-                    TimeCoordinate::Branch(name) => name.as_str(),
-                };
-
-                for stmt in &timeline.statements {
-                    if let Err(e) = vm.execute_statement(branch, stmt) {
-                        eprintln!(
-                            "\x1b[1;31merror: runtime failure in {}\x1b[0m\n  branch: {}\n  cause: {}",
-                            path.display(),
-                            branch,
-                            e
-                        );
-                        break;
-                    }
-                }
+            if let Err(e) = vm.execute_program(&ir_program) {
+                eprintln!(
+                    "\x1b[1;31merror: runtime failure in {}\x1b[0m\n  cause: {}",
+                    path.display(),
+                    e
+                );
             }
 
             println!("\x1b[1;32m{}: run ok\x1b[0m", path.display());
@@ -164,15 +152,14 @@ fn main() -> anyhow::Result<()> {
             );
             println!("\x1b[1;36m└──────────────────────┘\x1b[0m");
             println!("\x1b[1;35mFinal Arena State:\x1b[0m");
-            let mut keys: Vec<_> = vm.root_timeline.arena.bindings.keys().collect();
-            keys.sort();
-            for name in keys {
-                let state = &vm.root_timeline.arena.bindings[name];
-                println!(
-                    "  \x1b[1;33m{: <10}\x1b[0m = {}",
-                    name,
-                    format_entropic_state(state)
-                );
+            for (i, state) in vm.root_timeline.arena.registers.iter().enumerate() {
+                if !matches!(state, EntropicState::Consumed) {
+                    println!(
+                        "  \x1b[1;33mR{: <10}\x1b[0m = {}",
+                        i,
+                        format_entropic_state(state)
+                    );
+                }
             }
         }
     }

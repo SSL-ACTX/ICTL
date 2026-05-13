@@ -40,7 +40,11 @@ pub(crate) fn infer_expression_type(
             None => Err(analyzer
                 .annotate(SemanticErrorKind::UndefinedVariable(name.to_string()))),
         },
-        Expression::StructLit(fields) => {
+        Expression::StructLit(_, fields) => {
+            println!(
+                "DEBUG: Inferring StructLit with fields: {:?}",
+                fields.keys().collect::<Vec<_>>()
+            );
             let mut schema = std::collections::HashMap::new();
             for (k, v) in fields {
                 schema.insert(k.clone(), infer_expression_type(analyzer, v)?);
@@ -88,12 +92,21 @@ pub(crate) fn infer_expression_type(
             let resolved_t = analyzer.resolve_type(&t);
             match resolved_t {
                 Type::Unknown => Ok(Type::Unknown),
-                Type::Struct(s) => s.fields.get(field).cloned().ok_or_else(|| {
-                    analyzer.annotate(SemanticErrorKind::TypeMismatch(format!(
-                        "field '{}' not found",
-                        field
-                    )))
-                }),
+                Type::Struct(s) => {
+                    if !s.fields.contains_key(field) {
+                        println!(
+                            "DEBUG: Struct fields are {:?}",
+                            s.fields.keys().collect::<Vec<_>>()
+                        );
+                        println!("DEBUG: Target was {:?}", target);
+                    }
+                    s.fields.get(field).cloned().ok_or_else(|| {
+                        analyzer.annotate(SemanticErrorKind::TypeMismatch(format!(
+                            "field '{}' not found",
+                            field
+                        )))
+                    })
+                }
                 Type::Topology(fields) => {
                     fields.get(field).cloned().ok_or_else(|| {
                         analyzer.annotate(SemanticErrorKind::TypeMismatch(format!(
@@ -254,7 +267,7 @@ pub(crate) fn analyze_expression(
             }
             Ok(())
         }
-        Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
+        Expression::StructLit(_, fields) | Expression::TopologyLit(fields) => {
             for inner_expr in fields.values() {
                 analyze_expression(analyzer, inner_expr)?;
             }
@@ -314,7 +327,7 @@ pub(crate) fn analyze_expression_nonconsuming(
             }
             Ok(())
         }
-        Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
+        Expression::StructLit(_, fields) | Expression::TopologyLit(fields) => {
             for inner_expr in fields.values() {
                 analyze_expression_nonconsuming(analyzer, inner_expr)?;
             }
@@ -376,7 +389,7 @@ pub fn estimate_expression_cost(
             1 + estimate_expression_cost(analyzer, left)
                 + estimate_expression_cost(analyzer, right)
         }
-        Expression::StructLit(fields) | Expression::TopologyLit(fields) => {
+        Expression::StructLit(_, fields) | Expression::TopologyLit(fields) => {
             1 + fields
                 .values()
                 .map(|v| estimate_expression_cost(analyzer, v))

@@ -39,6 +39,6 @@ pub enum TemporalError {
     Paradox,
     #[error("Speculation collapsed or failed")]
     SpeculationCollapsed,
-    #[error("Temporal assertion failed")]
-    AssertionFailed,
+    #[error("Temporal assertion failed: {0}")]
+    AssertionFailed(String),
 }

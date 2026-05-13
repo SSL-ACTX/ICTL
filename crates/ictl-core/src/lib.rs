@@ -319,7 +319,7 @@ pub enum Expression {
         field: String,
     },
     CloneOp(String),
-    StructLit(HashMap<String, Expression>),
+    StructLit(Option<String>, HashMap<String, Expression>),
     TopologyLit(HashMap<String, Expression>),
     IndexAccess {
         target: Box<Expression>,

@@ -5,7 +5,7 @@ use ictl_core::{BinaryOperator, Expression, ParamMode};
 use std::collections::HashMap;
 
 impl Vm {
-    fn evaluate_binary_operation(
+    pub(crate) fn evaluate_binary_operation(
         &self,
         left_value: Payload,
         right_value: Payload,
