@@ -1,0 +1,13 @@
+[package]
+name = "ictl-cli"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[dependencies]
+ictl-core = { path = "../ictl-core" }
+ictl-frontend = { path = "../ictl-frontend" }
+ictl-analysis = { path = "../ictl-analysis" }
+ictl-runtime = { path = "../ictl-runtime" }
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }

@@ -1,0 +1,1302 @@
+use crate::parser::expressions::parse_expression;
+use crate::parser::Rule;
+use ictl_core::*;
+use pest::iterators::Pair;
+use std::collections::HashMap;
+
+fn parse_type_name(pair: Pair<Rule>) -> TypeName {
+    match pair.as_rule() {
+        Rule::type_name => {
+            let inner = pair.into_inner().next().unwrap();
+            parse_type_name(inner)
+        }
+        Rule::union_type => {
+            let mut parts = Vec::new();
+            for chunk in pair.into_inner() {
+                parts.push(parse_type_name(chunk));
+            }
+            if parts.len() == 1 {
+                parts.into_iter().next().unwrap()
+            } else {
+                TypeName::Union(parts)
+            }
+        }
+        Rule::optional_type => {
+            let mut inner = pair.into_inner();
+            let base = inner.next().unwrap();
+            let base_type = parse_type_name(base);
+            if let Some(opt) = inner.next() {
+                if opt.as_str() == "?" {
+                    TypeName::Optional(Box::new(base_type))
+                } else {
+                    base_type
+                }
+            } else {
+                base_type
+            }
+        }
+        Rule::base_type => {
+            let text = pair.as_str();
+            match text {
+                "int" => TypeName::Builtin(BuiltinType::Integer),
+                "bool" => TypeName::Builtin(BuiltinType::Bool),
+                "string" => TypeName::Builtin(BuiltinType::String),
+                "struct" => TypeName::Builtin(BuiltinType::Struct),
+                "topology" => TypeName::Builtin(BuiltinType::Topology),
+                "array" => TypeName::Builtin(BuiltinType::Array),
+                _ => TypeName::Custom(text.to_string()),
+            }
+        }
+        Rule::identifier => TypeName::Custom(pair.as_str().to_string()),
+        _ => TypeName::Custom(pair.as_str().to_string()),
+    }
+}
+
+pub(crate) fn parse_statement(pair: Pair<Rule>) -> SpannedStatement {
+    let span = Span {
+        start: pair.as_span().start(),
+        end: pair.as_span().end(),
+    };
+
+    let stmt = match pair.as_rule() {
+        Rule::timeline_block => {
+            let block = parse_timeline_block(pair);
+            Statement::RelativisticBlock {
+                time: block.time,
+                body: block.statements,
+            }
+        }
+        Rule::watchdog_stmt => {
+            let mut inner = pair.into_inner();
+            let target = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let timeout_ms = inner
+                .next()
+                .map(|p| p.as_str().parse::<u64>().unwrap_or(0))
+                .unwrap_or(0);
+
+            let mut recovery = Vec::new();
+            if let Some(recovery_pair) = inner.next() {
+                for stmt_pair in recovery_pair.into_inner() {
+                    if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                        recovery.push(parse_statement(actual_stmt));
+                    }
+                }
+            }
+
+            Statement::Watchdog {
+                target,
+                timeout_ms,
+                recovery,
+            }
+        }
+        Rule::isolate_stmt => {
+            let inner = pair.into_inner();
+            let mut name = None;
+            let mut manifest = Manifest::default();
+            let mut body = Vec::new();
+            for current in inner {
+                match current.as_rule() {
+                    Rule::identifier => name = Some(current.as_str().to_string()),
+                    Rule::manifest => manifest = parse_manifest(current),
+                    Rule::statement => {
+                        if let Some(s) = current.into_inner().next() {
+                            body.push(parse_statement(s));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Statement::Isolate(IsolateBlock {
+                name,
+                manifest,
+                body,
+            })
+        }
+        Rule::routine_stmt => {
+            let mut inner = pair.into_inner();
+            let name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut params = Vec::new();
+            let mut return_type = None;
+            let mut taking_ms: Option<u64> = None;
+            let mut body = Vec::new();
+
+            for current in inner {
+                match current.as_rule() {
+                    Rule::param_decl_list => {
+                        for p in current.into_inner() {
+                            let mut decl = p.into_inner();
+                            if let Some(mode) = decl.next() {
+                                if let Some(param_name) = decl.next() {
+                                    let param_type = decl
+                                        .next()
+                                        .and_then(|tp| tp.into_inner().next())
+                                        .map(parse_type_name);
+                                    let mode = match mode.as_str() {
+                                        "consume" => ParamMode::Consume,
+                                        "clone" => ParamMode::Clone,
+                                        "decay" => ParamMode::Decay,
+                                        _ => ParamMode::Peek,
+                                    };
+                                    params.push(ParamDecl {
+                                        mode,
+                                        name: param_name.as_str().to_string(),
+                                        typ: param_type,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Rule::return_annotation => {
+                        if let Some(typ) = current.into_inner().next() {
+                            return_type = Some(parse_type_name(typ));
+                        }
+                    }
+                    Rule::amount => {
+                        taking_ms = current.as_str().parse::<u64>().ok();
+                    }
+                    Rule::statement => {
+                        if let Some(s) = current.into_inner().next() {
+                            body.push(parse_statement(s));
+                        }
+                    }
+                    _ => {
+                        if current.as_str() == "_" {
+                            taking_ms = None;
+                        }
+                    }
+                }
+            }
+
+            Statement::RoutineDef {
+                name,
+                params,
+                return_type,
+                taking_ms,
+                body,
+            }
+        }
+        Rule::require_decl => Statement::Capability(parse_capability(pair)),
+        Rule::assignment_stmt => {
+            let mut inner = pair.into_inner();
+            let mut mutable = false;
+            if let Some(first) = inner.peek() {
+                if first.as_str() == "mut" {
+                    mutable = true;
+                    inner.next();
+                }
+            }
+
+            let target = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut var_type: Option<TypeName> = None;
+            if let Some(next_pair) = inner.peek() {
+                if next_pair.as_rule() == Rule::type_annotation {
+                    let type_annotation_pair = inner.next().unwrap();
+                    if let Some(type_name_pair) =
+                        type_annotation_pair.into_inner().next()
+                    {
+                        var_type = Some(parse_type_name(type_name_pair));
+                    }
+                }
+            }
+
+            let expr = inner
+                .next()
+                .map(parse_expression)
+                .unwrap_or(Expression::Literal("void".into()));
+
+            Statement::Assignment {
+                target,
+                mutable,
+                var_type,
+                expr,
+            }
+        }
+        Rule::type_decl => {
+            let mut inner = pair.into_inner();
+            let name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+
+            let mut decay_after_ms = None;
+            let mut scoped_branch = None;
+            let mut fields = std::collections::HashMap::new();
+
+            for current in inner {
+                match current.as_rule() {
+                    Rule::decay_opt => {
+                        decay_after_ms = current
+                            .into_inner()
+                            .next()
+                            .and_then(|p| p.as_str().parse::<u64>().ok());
+                    }
+                    Rule::scoped_opt => {
+                        scoped_branch = current
+                            .into_inner()
+                            .next()
+                            .map(|p| p.as_str().to_string());
+                    }
+                    Rule::type_field_list => {
+                        for field_pair in current.into_inner() {
+                            let mut kv = field_pair.into_inner();
+                            if let (Some(id), Some(type_name_pair)) =
+                                (kv.next(), kv.next())
+                            {
+                                let field_type = parse_type_name(type_name_pair);
+                                fields.insert(id.as_str().to_string(), field_type);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Statement::TypeDecl {
+                name,
+                fields,
+                decay_after_ms,
+                scoped_branch,
+            }
+        }
+        Rule::assert_time_stmt => {
+            let mut inner = pair.into_inner();
+            let op_str = inner.next().map(|p| p.as_str()).unwrap_or("==");
+            let operator = match op_str {
+                "==" => BinaryOperator::Eq,
+                "!=" => BinaryOperator::Neq,
+                "<" => BinaryOperator::Lt,
+                ">" => BinaryOperator::Gt,
+                "<=" => BinaryOperator::Le,
+                ">=" => BinaryOperator::Ge,
+                _ => BinaryOperator::Eq,
+            };
+            let limit_ms = inner
+                .next()
+                .and_then(|p| p.as_str().parse::<u64>().ok())
+                .unwrap_or(0);
+
+            let mut fallback = None;
+            if let Some(fb_pair) = inner.next() {
+                let mut body = Vec::new();
+                for stmt_pair in fb_pair.into_inner() {
+                    if stmt_pair.as_rule() == Rule::statement {
+                        if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    } else if stmt_pair.as_rule() == Rule::statement_block {
+                        for inner_stmt in stmt_pair.into_inner() {
+                            if inner_stmt.as_rule() == Rule::statement {
+                                if let Some(actual_stmt) =
+                                    inner_stmt.into_inner().next()
+                                {
+                                    body.push(parse_statement(actual_stmt));
+                                }
+                            }
+                        }
+                    }
+                }
+                fallback = Some(body);
+            }
+
+            Statement::AssertTime {
+                operator,
+                limit_ms,
+                fallback,
+            }
+        }
+        Rule::decay_handler_stmt => {
+            let mut inner = pair.into_inner();
+            let type_name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut body = Vec::new();
+            for stmt_pair in inner {
+                if stmt_pair.as_rule() == Rule::statement {
+                    if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                        body.push(parse_statement(actual_stmt));
+                    }
+                }
+            }
+            Statement::DecayHandler { type_name, body }
+        }
+        Rule::open_chan_stmt => {
+            let mut inner = pair.into_inner();
+            let name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let capacity = inner
+                .next()
+                .map(|p| p.as_str().parse::<usize>().unwrap_or(1))
+                .unwrap_or(1);
+            Statement::ChannelOpen { name, capacity }
+        }
+        Rule::slice_stmt => {
+            let amount = pair
+                .into_inner()
+                .next()
+                .and_then(|p| p.as_str().parse::<u64>().ok())
+                .unwrap_or(0);
+            Statement::Slice {
+                milliseconds: amount,
+            }
+        }
+        Rule::field_update_stmt => {
+            let mut inner = pair.into_inner();
+            let target_expr =
+                crate::parser::expressions::parse_expression(inner.next().unwrap());
+            let value =
+                crate::parser::expressions::parse_expression(inner.next().unwrap());
+            if let Expression::FieldAccess { target, field } = target_expr {
+                Statement::FieldUpdate {
+                    target: *target,
+                    field,
+                    value,
+                }
+            } else {
+                Statement::Expression(Expression::BinaryOp {
+                    left: Box::new(target_expr),
+                    op: BinaryOperator::Eq, // Placeholder
+                    right: Box::new(value),
+                })
+            }
+        }
+        Rule::chan_send_stmt => {
+            let mut inner = pair.into_inner();
+            let chan_id = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let value_id = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            Statement::ChannelSend { chan_id, value_id }
+        }
+        Rule::split_stmt => {
+            let mut inner = pair.into_inner();
+            let parent = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let branches = inner
+                .next()
+                .map(|p| p.into_inner().map(|id| id.as_str().to_string()).collect())
+                .unwrap_or_default();
+            Statement::Split { parent, branches }
+        }
+        Rule::merge_stmt => {
+            let mut inner = pair.into_inner();
+            let branches = inner
+                .next()
+                .map(|p| p.into_inner().map(|id| id.as_str().to_string()).collect())
+                .unwrap_or_default();
+            let target = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut taking_ms = None;
+            let mut resolutions = MergeResolution {
+                rules: HashMap::new(),
+                auto: false,
+                fallback: None,
+                taking_ms: None,
+            };
+            let mut fallback = None;
+
+            for element in inner {
+                match element.as_rule() {
+                    Rule::merge_taking_opt => {
+                        let ms = element
+                            .into_inner()
+                            .next()
+                            .and_then(|p| p.as_str().parse::<u64>().ok());
+                        taking_ms = ms;
+                    }
+                    Rule::resolution_rules => {
+                        let mut rules = HashMap::new();
+                        for rule in element.into_inner() {
+                            let mut r_inner = rule.into_inner();
+                            if let (Some(k), Some(v)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let strat = parse_resolution_strategy(v);
+                                rules.insert(k.as_str().to_string(), strat);
+                            }
+                        }
+                        resolutions.rules = rules;
+                    }
+                    Rule::fallback_stmt => {
+                        let mut fb = Vec::new();
+                        for stmt_pair in element.into_inner() {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
+                                fb.push(parse_statement(actual_stmt));
+                            }
+                        }
+                        fallback = Some(fb);
+                    }
+                    _ => {}
+                }
+            }
+            resolutions.fallback = fallback.clone();
+            resolutions.taking_ms = taking_ms;
+            Statement::Merge {
+                branches,
+                target,
+                resolutions,
+            }
+        }
+        Rule::commit_stmt => {
+            let mut body = Vec::new();
+            for stmt_pair in pair.into_inner() {
+                if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                    body.push(parse_statement(actual_stmt));
+                }
+            }
+            Statement::Commit(body)
+        }
+        Rule::speculate_stmt => {
+            let mut inner = pair.into_inner();
+            let max_ms = inner
+                .next()
+                .and_then(|p| p.as_str().parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut body = Vec::new();
+            let mut fallback = None;
+
+            for element in inner {
+                match element.as_rule() {
+                    Rule::statement => {
+                        if let Some(actual_stmt) = element.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    }
+                    Rule::fallback_stmt => {
+                        let mut fb = Vec::new();
+                        for stmt_pair in element.into_inner() {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
+                                fb.push(parse_statement(actual_stmt));
+                            }
+                        }
+                        fallback = Some(fb);
+                    }
+                    _ => {}
+                }
+            }
+
+            Statement::Speculate {
+                max_ms,
+                body,
+                fallback,
+            }
+        }
+        Rule::collapse_stmt => Statement::Collapse,
+        Rule::speculation_mode_stmt => {
+            let mode_str = pair
+                .into_inner()
+                .next()
+                .map(|p| p.as_str())
+                .unwrap_or("selective");
+            let mode = match mode_str {
+                "full" => SpeculationCommitMode::Full,
+                _ => SpeculationCommitMode::Selective,
+            };
+            Statement::SpeculationMode(mode)
+        }
+        Rule::select_stmt => {
+            let mut inner = pair.into_inner();
+            let max_ms = inner
+                .next()
+                .and_then(|p| p.as_str().parse::<u64>().ok())
+                .unwrap_or(0);
+            let mut cases = Vec::new();
+            let mut timeout = None;
+            let mut reconcile = None;
+
+            for element in inner {
+                match element.as_rule() {
+                    Rule::select_case => {
+                        let mut case_inner = element.into_inner();
+                        let binding = case_inner
+                            .next()
+                            .map(|p| p.as_str().to_string())
+                            .unwrap_or_default();
+                        let source = case_inner
+                            .next()
+                            .map(parse_expression)
+                            .unwrap_or(Expression::Literal("".into()));
+                        let body = case_inner
+                            .next()
+                            .map(|stmt_block| {
+                                stmt_block
+                                    .into_inner()
+                                    .filter_map(|s| s.into_inner().next())
+                                    .map(parse_statement)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        cases.push(SelectCase {
+                            binding,
+                            source,
+                            body,
+                        });
+                    }
+                    Rule::timeout_clause => {
+                        if let Some(block) = element.into_inner().next() {
+                            let body = block
+                                .into_inner()
+                                .filter_map(|s| s.into_inner().next())
+                                .map(parse_statement)
+                                .collect();
+                            timeout = Some(body);
+                        }
+                    }
+                    Rule::resolution_rules => {
+                        let mut rules = HashMap::new();
+                        for rule in element.into_inner() {
+                            let mut r_inner = rule.into_inner();
+                            if let (Some(k), Some(v)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let value = v.as_str();
+                                let strat = if value == "first_wins" {
+                                    ResolutionStrategy::FirstWins
+                                } else if value == "decay" {
+                                    ResolutionStrategy::Decay
+                                } else if let Some(inner) =
+                                    value.strip_prefix("priority(")
+                                {
+                                    if let Some(branch_name) =
+                                        inner.strip_suffix(")")
+                                    {
+                                        ResolutionStrategy::Priority(
+                                            branch_name.to_string(),
+                                        )
+                                    } else {
+                                        ResolutionStrategy::Custom(value.to_string())
+                                    }
+                                } else {
+                                    ResolutionStrategy::Priority(value.to_string())
+                                };
+                                rules.insert(k.as_str().to_string(), strat);
+                            }
+                        }
+                        reconcile = Some(MergeResolution {
+                            rules,
+                            auto: false,
+                            fallback: None,
+                            taking_ms: None,
+                        });
+                    }
+                    Rule::reconcile_clause if element.as_str().contains("auto") => {
+                        reconcile = Some(MergeResolution {
+                            rules: HashMap::new(),
+                            auto: true,
+                            fallback: None,
+                            taking_ms: None,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            Statement::Select {
+                max_ms,
+                cases,
+                timeout,
+                reconcile,
+            }
+        }
+        Rule::match_entropy_stmt => {
+            let mut inner = pair.into_inner();
+            let target = parse_expression(inner.next().unwrap());
+            let mut valid_branch = None;
+            let mut decayed_branch = None;
+            let mut pending_branch = None;
+            let mut consumed_branch = None;
+
+            for element in inner {
+                if element.as_rule() == Rule::entropy_branch {
+                    let text = element.as_str().trim();
+                    let is_valid = text.starts_with("Valid(");
+                    let is_decayed = text.starts_with("Decayed(");
+                    let is_pending = text.starts_with("Pending(");
+                    let is_consumed = text.starts_with("Consumed");
+
+                    let mut branch_inner = element.into_inner();
+                    if is_valid || is_decayed || is_pending {
+                        let var_name = branch_inner
+                            .next()
+                            .map(|p| p.as_str().to_string())
+                            .unwrap_or_default();
+                        let body = branch_inner
+                            .next()
+                            .map(|stmt_block| {
+                                stmt_block
+                                    .into_inner()
+                                    .filter_map(|s| s.into_inner().next())
+                                    .map(parse_statement)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if is_valid {
+                            valid_branch = Some((var_name, body));
+                        } else if is_decayed {
+                            decayed_branch = Some((var_name, body));
+                        } else if is_pending {
+                            pending_branch = Some(body);
+                        }
+                    } else if is_consumed {
+                        let body = branch_inner
+                            .next()
+                            .map(|stmt_block| {
+                                stmt_block
+                                    .into_inner()
+                                    .filter_map(|s| s.into_inner().next())
+                                    .map(parse_statement)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        consumed_branch = Some(body);
+                    }
+                }
+            }
+            Statement::MatchEntropy {
+                target,
+                valid_branch,
+                decayed_branch,
+                pending_branch,
+                consumed_branch,
+            }
+        }
+        Rule::anchor_stmt => Statement::Anchor(
+            pair.into_inner()
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default(),
+        ),
+        Rule::rewind_stmt => Statement::Rewind(
+            pair.into_inner()
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default(),
+        ),
+        Rule::network_request_stmt => {
+            let domain = pair
+                .into_inner()
+                .next()
+                .map(|p| p.as_str().replace("\"", ""))
+                .unwrap_or_default();
+            Statement::NetworkRequest { domain }
+        }
+        Rule::await_stmt => {
+            let target = pair
+                .into_inner()
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            Statement::Await(target)
+        }
+        Rule::print_stmt => {
+            let mut inner = pair.into_inner();
+            let expr = inner
+                .next()
+                .map(parse_expression)
+                .unwrap_or(Expression::Literal("".into()));
+            Statement::Print(expr)
+        }
+        Rule::debug_stmt => {
+            let mut inner = pair.into_inner();
+            let expr = inner
+                .next()
+                .map(parse_expression)
+                .unwrap_or(Expression::Literal("".into()));
+            Statement::Debug(expr)
+        }
+        Rule::break_stmt => Statement::Break,
+        Rule::if_stmt => {
+            let mut inner = pair.into_inner();
+            let condition = inner
+                .next()
+                .map(parse_expression)
+                .unwrap_or(Expression::Literal("false".into()));
+            let then_branch = if let Some(b) = inner.next() {
+                b.into_inner()
+                    .filter_map(|stmt_pair| stmt_pair.into_inner().next())
+                    .map(parse_statement)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let else_branch = inner.next().map(|else_pair| {
+                else_pair
+                    .into_inner()
+                    .filter_map(|stmt_pair| stmt_pair.into_inner().next())
+                    .map(parse_statement)
+                    .collect()
+            });
+            let reconcile_rules = if let Some(reconcile_pair) = inner.next() {
+                let mut rules = HashMap::new();
+                let mut is_auto = false;
+                for child in reconcile_pair.into_inner() {
+                    if child.as_rule() == Rule::resolution_rules {
+                        for rule in child.into_inner() {
+                            let mut r_inner = rule.into_inner();
+                            if let (Some(k), Some(v)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let value = v.as_str();
+                                let strat = if value == "first_wins" {
+                                    ResolutionStrategy::FirstWins
+                                } else if value == "decay" {
+                                    ResolutionStrategy::Decay
+                                } else if let Some(inner) =
+                                    value.strip_prefix("priority(")
+                                {
+                                    if let Some(branch_name) =
+                                        inner.strip_suffix(")")
+                                    {
+                                        ResolutionStrategy::Priority(
+                                            branch_name.to_string(),
+                                        )
+                                    } else {
+                                        ResolutionStrategy::Custom(value.to_string())
+                                    }
+                                } else {
+                                    ResolutionStrategy::Priority(value.to_string())
+                                };
+                                rules.insert(k.as_str().to_string(), strat);
+                            }
+                        }
+                    } else if child.as_str() == "auto" {
+                        is_auto = true;
+                    }
+                }
+                Some(MergeResolution {
+                    rules,
+                    auto: is_auto,
+                    fallback: None,
+                    taking_ms: None,
+                })
+            } else {
+                None
+            };
+
+            Statement::If {
+                condition,
+                then_branch,
+                else_branch,
+                reconcile: reconcile_rules,
+            }
+        }
+        Rule::inspect_stmt => {
+            let mut inner = pair.into_inner();
+            let target = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mut body = Vec::new();
+            for stmt in inner {
+                if let Some(actual_stmt) = stmt.into_inner().next() {
+                    body.push(parse_statement(actual_stmt));
+                }
+            }
+            Statement::Inspect { target, body }
+        }
+        Rule::for_stmt => {
+            let mut inner = pair.into_inner();
+            let item = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mode = inner
+                .next()
+                .map(|p| match p.as_str() {
+                    "consume" => ForMode::Consume,
+                    _ => ForMode::Clone,
+                })
+                .unwrap_or(ForMode::Consume);
+            let source = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+
+            let mut pacing_ms = None;
+            let mut max_ms = None;
+            let mut body = Vec::new();
+
+            for next in inner {
+                match next.as_rule() {
+                    Rule::pacing_opt => {
+                        let amount = next
+                            .into_inner()
+                            .next()
+                            .and_then(|p| p.as_str().parse::<u64>().ok());
+                        pacing_ms = amount;
+                    }
+                    Rule::max_opt => {
+                        let amount = next
+                            .into_inner()
+                            .next_back()
+                            .and_then(|p| p.as_str().parse::<u64>().ok());
+                        max_ms = amount;
+                    }
+                    Rule::statement => {
+                        if let Some(actual_stmt) = next.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Statement::For {
+                item_name: item,
+                mode,
+                source,
+                body,
+                pacing_ms,
+                max_ms,
+            }
+        }
+        Rule::split_map_stmt => {
+            let mut inner = pair.into_inner();
+            let item_name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mode = inner.next().map(|p| p.as_str()).unwrap_or("consume");
+            let source = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let mode_enum = if mode == "clone" {
+                ForMode::Clone
+            } else {
+                ForMode::Consume
+            };
+
+            let mut body = Vec::new();
+            let mut reconcile = None;
+
+            for next in inner {
+                match next.as_rule() {
+                    Rule::statement => {
+                        if let Some(actual_stmt) = next.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    }
+                    Rule::resolution_rules => {
+                        let mut rules = HashMap::new();
+                        for rule in next.into_inner() {
+                            let mut r_inner = rule.into_inner();
+                            if let (Some(k), Some(v)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let strat = match v.as_str() {
+                                    "first_wins" => ResolutionStrategy::FirstWins,
+                                    "decay" => ResolutionStrategy::Decay,
+                                    p if p.starts_with("priority(") => {
+                                        let name = p
+                                            .trim_start_matches("priority(")
+                                            .trim_end_matches(")");
+                                        ResolutionStrategy::Priority(
+                                            name.to_string(),
+                                        )
+                                    }
+                                    _ => ResolutionStrategy::Custom(
+                                        v.as_str().to_string(),
+                                    ),
+                                };
+                                rules.insert(k.as_str().to_string(), strat);
+                            }
+                        }
+                        reconcile = Some(MergeResolution {
+                            rules,
+                            auto: false,
+                            fallback: None,
+                            taking_ms: None,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+
+            Statement::SplitMap {
+                item_name,
+                mode: mode_enum,
+                source,
+                body,
+                reconcile,
+            }
+        }
+        Rule::loop_stmt => {
+            let mut inner = pair.into_inner();
+            let first = inner.next();
+            if let Some(first) = first {
+                if first.as_rule() == Rule::amount {
+                    let max_value = first.as_str().parse::<u64>().unwrap_or(0);
+                    let mut body = Vec::new();
+                    for stmt_pair in inner {
+                        if stmt_pair.as_rule() == Rule::statement {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
+                                body.push(parse_statement(actual_stmt));
+                            }
+                        }
+                    }
+                    Statement::Loop {
+                        max_ms: max_value,
+                        body,
+                    }
+                } else {
+                    // loop tick
+                    let mut body = Vec::new();
+                    if first.as_rule() == Rule::statement_block {
+                        for stmt_pair in first.into_inner() {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
+                                body.push(parse_statement(actual_stmt));
+                            }
+                        }
+                    } else if first.as_rule() == Rule::statement {
+                        if let Some(actual_stmt) = first.into_inner().next() {
+                            body.push(parse_statement(actual_stmt));
+                        }
+                    }
+                    for stmt_pair in inner {
+                        if stmt_pair.as_rule() == Rule::statement {
+                            if let Some(actual_stmt) = stmt_pair.into_inner().next()
+                            {
+                                body.push(parse_statement(actual_stmt));
+                            }
+                        }
+                    }
+                    Statement::LoopTick { body }
+                }
+            } else {
+                Statement::Loop {
+                    max_ms: 0,
+                    body: Vec::new(),
+                }
+            }
+        }
+        Rule::yield_stmt => {
+            let item = pair
+                .into_inner()
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            Statement::Yield(item)
+        }
+        Rule::reset_stmt => {
+            let mut inner = pair.into_inner();
+            let target = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            let anchor_name = inner
+                .next()
+                .map(|p| p.as_str().to_string())
+                .unwrap_or_default();
+            Statement::AcausalReset {
+                target,
+                anchor_name,
+            }
+        }
+        Rule::entangle_stmt => {
+            let variables = pair
+                .into_inner()
+                .next()
+                .map(|p| p.into_inner().map(|id| id.as_str().to_string()).collect())
+                .unwrap_or_default();
+            Statement::Entangle { variables }
+        }
+        _ => Statement::Expression(parse_expression(pair)),
+    };
+
+    SpannedStatement { stmt, span }
+}
+
+pub(crate) fn parse_timeline_block(pair: Pair<Rule>) -> TimelineBlock {
+    let mut inner = pair.into_inner();
+    let time_coord_pair = inner.next().expect("Timeline missing time");
+    let time_pair = time_coord_pair
+        .into_inner()
+        .next()
+        .expect("Invalid time structure");
+
+    let time = match time_pair.as_rule() {
+        Rule::absolute_time => TimeCoordinate::Global(
+            time_pair.as_str().replace("ms", "").parse().unwrap_or(0),
+        ),
+        Rule::relative_time => TimeCoordinate::Relative(
+            time_pair
+                .as_str()
+                .replace("+", "")
+                .replace("ms", "")
+                .parse()
+                .unwrap_or(0),
+        ),
+        Rule::branch_name => TimeCoordinate::Branch(time_pair.as_str().to_string()),
+        _ => TimeCoordinate::Global(0),
+    };
+
+    let mut statements = Vec::new();
+    if let Some(block_inner) = inner.next() {
+        for stmt_pair in block_inner.into_inner() {
+            if let Some(actual_stmt) = stmt_pair.into_inner().next() {
+                let spanned = parse_statement(actual_stmt);
+                statements.push(spanned);
+            }
+        }
+    }
+    TimelineBlock { time, statements }
+}
+
+fn parse_manifest(pair: Pair<Rule>) -> Manifest {
+    let mut manifest = Manifest::default();
+    for item in pair.into_inner() {
+        match item.as_rule() {
+            Rule::resource_decl => {
+                let mut inner = item.into_inner();
+                let res_type = inner.next().map(|p| p.as_str()).unwrap_or("");
+                let amount = inner
+                    .next()
+                    .map(|p| p.as_str().parse::<u64>().unwrap_or(0))
+                    .unwrap_or(0);
+                let unit = inner.next().map(|p| p.as_str());
+
+                match res_type {
+                    "cpu" => {
+                        let multiplier = match unit {
+                            Some("ms") => 1,
+                            _ => 1,
+                        };
+                        manifest.cpu_budget_ms = Some(amount * multiplier);
+                    }
+                    "memory" => {
+                        let multiplier = match unit {
+                            Some("KB") => 1024,
+                            Some("MB") => 1024 * 1024,
+                            Some("bytes") => 1,
+                            _ => 1,
+                        };
+                        manifest.memory_budget_bytes = Some(amount * multiplier);
+                    }
+                    _ => {
+                        manifest
+                            .resource_budgets
+                            .insert(res_type.to_string(), amount);
+                    }
+                }
+            }
+            Rule::slice_decl => {
+                let amount = item
+                    .into_inner()
+                    .next()
+                    .map(|p| p.as_str().parse::<u64>().unwrap_or(0))
+                    .unwrap_or(0);
+                manifest.cpu_budget_ms = Some(amount);
+            }
+            Rule::require_decl => manifest.capabilities.push(parse_capability(item)),
+            _ => {}
+        }
+    }
+    manifest
+}
+
+fn parse_capability(pair: Pair<Rule>) -> Capability {
+    let mut inner = pair.into_inner();
+    let path = inner
+        .next()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_default();
+    let mut parameters = HashMap::new();
+    if let Some(params_pair) = inner.next() {
+        for p in params_pair.into_inner() {
+            let mut p_inner = p.into_inner();
+            if let (Some(k), Some(v)) = (p_inner.next(), p_inner.next()) {
+                parameters
+                    .insert(k.as_str().to_string(), v.as_str().replace("\"", ""));
+            }
+        }
+    }
+    Capability { path, parameters }
+}
+fn parse_resolution_strategy(pair: Pair<Rule>) -> ResolutionStrategy {
+    match pair.as_rule() {
+        Rule::resolution_strategy => {
+            if let Some(inner) = pair.clone().into_inner().next() {
+                match inner.as_rule() {
+                    Rule::topology_union => {
+                        let mut rules = HashMap::new();
+                        let mut default = Box::new(ResolutionStrategy::Decay);
+                        let mut on_invalid = None;
+                        for rule_group in inner.into_inner() {
+                            match rule_group.as_rule() {
+                                Rule::resolution_rules => {
+                                    for rule_pair in rule_group.into_inner() {
+                                        let mut r_inner = rule_pair.into_inner();
+                                        if let (Some(k_pair), Some(v_pair)) =
+                                            (r_inner.next(), r_inner.next())
+                                        {
+                                            let k = k_pair
+                                                .as_str()
+                                                .trim_matches('"')
+                                                .to_string();
+                                            let v =
+                                                parse_resolution_strategy(v_pair);
+                                            if k == "_" {
+                                                default = Box::new(v);
+                                            } else {
+                                                rules.insert(k, v);
+                                            }
+                                        }
+                                    }
+                                }
+                                Rule::on_invalid_clause => {
+                                    let clauses = rule_group.into_inner();
+                                    let mut branch = None;
+                                    let mut anchor = None;
+                                    for pkt in clauses {
+                                        match pkt.as_rule() {
+                                            Rule::identifier => {
+                                                if branch.is_none() {
+                                                    branch = Some(
+                                                        pkt.as_str().to_string(),
+                                                    );
+                                                } else {
+                                                    anchor = Some(
+                                                        pkt.as_str().to_string(),
+                                                    );
+                                                }
+                                            }
+                                            Rule::rewind_clause => {
+                                                for inner in pkt.into_inner() {
+                                                    if inner.as_rule()
+                                                        == Rule::identifier
+                                                    {
+                                                        if branch.is_none() {
+                                                            branch = Some(
+                                                                inner
+                                                                    .as_str()
+                                                                    .to_string(),
+                                                            );
+                                                        } else {
+                                                            anchor = Some(
+                                                                inner
+                                                                    .as_str()
+                                                                    .to_string(),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    if let (Some(branch), Some(anchor)) =
+                                        (branch, anchor)
+                                    {
+                                        on_invalid =
+                                            Some(CausalReversion { branch, anchor });
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        ResolutionStrategy::TopologyUnion {
+                            key_rules: rules,
+                            default,
+                            on_invalid,
+                        }
+                    }
+                    Rule::topology_intersect => {
+                        let mut rules = HashMap::new();
+                        let mut default = Box::new(ResolutionStrategy::Decay);
+                        for rule_pair in
+                            inner.into_inner().flat_map(|rr| rr.into_inner())
+                        {
+                            let mut r_inner = rule_pair.into_inner();
+                            if let (Some(k_pair), Some(v_pair)) =
+                                (r_inner.next(), r_inner.next())
+                            {
+                                let k =
+                                    k_pair.as_str().trim_matches('"').to_string();
+                                let v = parse_resolution_strategy(v_pair);
+                                if k == "_" {
+                                    default = Box::new(v);
+                                } else {
+                                    rules.insert(k, v);
+                                }
+                            }
+                        }
+                        ResolutionStrategy::TopologyIntersect {
+                            key_rules: rules,
+                            default,
+                            on_invalid: None,
+                        }
+                    }
+                    _ => {
+                        if inner.as_rule() == Rule::identifier {
+                            // This is the identifier from priority(identifier)
+                            ResolutionStrategy::Priority(inner.as_str().to_string())
+                        } else {
+                            let value = inner.as_str();
+                            if value == "first_wins" {
+                                ResolutionStrategy::FirstWins
+                            } else if value == "decay" {
+                                ResolutionStrategy::Decay
+                            } else if value == "auto" {
+                                ResolutionStrategy::Auto
+                            } else if let Some(inner_p) =
+                                value.strip_prefix("priority(")
+                            {
+                                if let Some(branch_name) = inner_p.strip_suffix(")")
+                                {
+                                    ResolutionStrategy::Priority(
+                                        branch_name.to_string(),
+                                    )
+                                } else {
+                                    ResolutionStrategy::Priority(value.to_string())
+                                }
+                            } else {
+                                ResolutionStrategy::Custom(value.to_string())
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Literal strategies without inner child rules
+                let value = pair.as_str().trim();
+                if value == "first_wins" {
+                    ResolutionStrategy::FirstWins
+                } else if value == "decay" {
+                    ResolutionStrategy::Decay
+                } else if value == "auto" {
+                    ResolutionStrategy::Auto
+                } else if let Some(inner_p) = value.strip_prefix("priority(") {
+                    if let Some(branch_name) = inner_p.strip_suffix(")") {
+                        ResolutionStrategy::Priority(branch_name.to_string())
+                    } else {
+                        ResolutionStrategy::Priority(value.to_string())
+                    }
+                } else {
+                    ResolutionStrategy::Custom(value.to_string())
+                }
+            }
+        }
+        _ => ResolutionStrategy::Custom(pair.as_str().to_string()),
+    }
+}

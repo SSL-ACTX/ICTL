@@ -1,7 +1,7 @@
 use crate::analysis_worker::AnalysisResults;
 use dashmap::DashMap;
-use ictl::analysis::statement::estimate_block_cost;
-use ictl::frontend::ast::*;
+use ictl_analysis::statement::estimate_block_cost;
+use ictl_core::*;
 use tower_lsp::lsp_types::*;
 
 pub async fn handle_inlay_hints(
@@ -112,8 +112,8 @@ mod tests {
     use super::*;
     use crate::analysis_worker::AnalysisResults;
     use dashmap::DashMap;
-    use ictl::analysis::analyzer::EntropicAnalyzer;
-    use ictl::frontend::ast::*;
+    use ictl_analysis::analyzer::EntropicAnalyzer;
+    use ictl_core::*;
     use tower_lsp::lsp_types::Url;
 
     #[tokio::test]

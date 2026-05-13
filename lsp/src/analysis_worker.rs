@@ -1,7 +1,6 @@
-use ictl::analysis::analyzer::{BranchState, EntropicAnalyzer};
-use ictl::frontend::ast::Program;
-use ictl::frontend::parser::parse_ictl;
-use std::collections::HashMap;
+use ictl_analysis::analyzer::EntropicAnalyzer;
+use ictl_core::Program;
+use ictl_frontend::parser::parse_ictl;
 use tower_lsp::lsp_types::*;
 
 pub struct AnalysisResults {

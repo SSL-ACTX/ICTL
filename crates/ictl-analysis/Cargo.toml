@@ -1,0 +1,11 @@
+[package]
+name = "ictl-analysis"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[dependencies]
+ictl-core = { path = "../ictl-core" }
+ictl-frontend = { path = "../ictl-frontend" }
+thiserror = "2.0.18"
+anyhow = "1.0"

@@ -2,9 +2,13 @@
 name = "ictl-lsp"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-only"
 
 [dependencies]
-ictl = { path = ".." }
+ictl-core = { path = "../crates/ictl-core" }
+ictl-frontend = { path = "../crates/ictl-frontend" }
+ictl-analysis = { path = "../crates/ictl-analysis" }
+ictl-runtime = { path = "../crates/ictl-runtime" }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }

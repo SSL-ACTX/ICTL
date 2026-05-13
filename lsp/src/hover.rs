@@ -1,6 +1,6 @@
 use crate::analysis_worker::AnalysisResults;
 use dashmap::DashMap;
-use ictl::analysis::statement::estimate_statement_cost;
+use ictl_analysis::statement::estimate_statement_cost;
 use tower_lsp::lsp_types::*;
 
 pub async fn handle_hover(
@@ -41,11 +41,7 @@ pub async fn handle_hover(
     Ok(None)
 }
 
-fn is_position_in_span(
-    pos: Position,
-    span: &ictl::frontend::ast::Span,
-    source: &str,
-) -> bool {
+fn is_position_in_span(pos: Position, span: &ictl_core::Span, source: &str) -> bool {
     let mut offset = 0;
     for (i, line) in source.lines().enumerate() {
         if i as u32 == pos.line {
@@ -62,8 +58,8 @@ mod tests {
     use super::*;
     use crate::analysis_worker::AnalysisResults;
     use dashmap::DashMap;
-    use ictl::analysis::analyzer::EntropicAnalyzer;
-    use ictl::frontend::ast::*;
+    use ictl_analysis::analyzer::EntropicAnalyzer;
+    use ictl_core::*;
     use tower_lsp::lsp_types::Url;
 
     #[tokio::test]

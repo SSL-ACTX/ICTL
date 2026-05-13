@@ -1,6 +1,6 @@
 use crate::analysis_worker::AnalysisResults;
 use dashmap::DashMap;
-use ictl::frontend::ast::*;
+use ictl_core::*;
 use tower_lsp::lsp_types::*;
 
 pub async fn handle_tokens(
@@ -57,8 +57,8 @@ mod tests {
     use super::*;
     use crate::analysis_worker::AnalysisResults;
     use dashmap::DashMap;
-    use ictl::analysis::analyzer::EntropicAnalyzer;
-    use ictl::frontend::ast::*;
+    use ictl_analysis::analyzer::EntropicAnalyzer;
+    use ictl_core::*;
     use tower_lsp::lsp_types::Url;
 
     #[tokio::test]
@@ -108,7 +108,7 @@ mod tests {
 
 fn walk_statement(
     stmt: &SpannedStatement,
-    state: Option<&ictl::analysis::analyzer::BranchState>,
+    state: Option<&ictl_analysis::analyzer::BranchState>,
     tokens: &mut Vec<SemanticToken>,
     last_line: &mut u32,
     last_start: &mut u32,
@@ -142,7 +142,7 @@ fn walk_statement(
 fn walk_expression(
     expr: &Expression,
     span: &Span,
-    state: Option<&ictl::analysis::analyzer::BranchState>,
+    state: Option<&ictl_analysis::analyzer::BranchState>,
     tokens: &mut Vec<SemanticToken>,
     last_line: &mut u32,
     last_start: &mut u32,
@@ -188,7 +188,7 @@ fn walk_expression(
 fn push_variable_token(
     name: &str,
     span: &Span,
-    state: Option<&ictl::analysis::analyzer::BranchState>,
+    state: Option<&ictl_analysis::analyzer::BranchState>,
     tokens: &mut Vec<SemanticToken>,
     last_line: &mut u32,
     last_start: &mut u32,
@@ -212,10 +212,8 @@ fn push_variable_token(
         let token_type = if let Some(s) = state {
             if s.consumed.contains(name) {
                 1 // COMMENT (for gray/strikethrough)
-            } else if s.decayed.contains(name) {
-                0 // VARIABLE (yellow/warning)
             } else {
-                0 // VARIABLE (bright)
+                0 // VARIABLE (bright/warning)
             }
         } else {
             0

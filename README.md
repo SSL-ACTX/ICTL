@@ -1,92 +1,71 @@
-<div align="center">
+# ICTL: Isolate Concurrent Temporal Language
 
-![ICTL Banner](https://capsule-render.vercel.app/api?type=waving&color=0:0ea5e9,100:0284c7&height=220&section=header&text=ICTL&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=Isolate%20Concurrent%20Temporal%20Language&descSize=20&descAlignY=55)
+## Abstract
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg?style=for-the-badge)](https://www.rust-lang.org/)
-[![Architecture](https://img.shields.io/badge/Architecture-Temporal_VM-magenta.svg?style=for-the-badge)]()
-[![Status](https://img.shields.io/badge/Status-Development-purple.svg?style=for-the-badge)](https://github.com/SSL-ACTX/ictl)
+The Isolate Concurrent Temporal Language (ICTL) is a domain-specific research language designed to address the inherent non-determinism in concurrent systems. By treating time as a first-class execution primitive and implementing an entropic memory model, ICTL provides a framework where race conditions are eliminated through mathematical enforcement of temporal invariants. This repository contains the reference implementation of the ICTL toolchain, including the compiler and the Stack-based Temporal Virtual Machine (STVM).
 
-[**Documentation**](#documentation-index) &middot; [**Core Concepts**](#the-three-pillars) &middot; [**Getting Started**](#getting-started)
+## Theoretical Framework
 
-</div>
+The design of ICTL is predicated on three primary architectural pillars:
 
----
+### 1. Deterministic Temporal Execution
+In ICTL, computational time is not an emergent side effect of hardware execution but a defined primitive within the language semantics. Every instruction is assigned a deterministic temporal cost. The STVM ensures time-invariance across disparate execution environments through deterministic padding and isochronous scheduling, effectively rendering race conditions impossible.
 
-**ICTL** (Isolate Concurrent Temporal Language) is a research-focused, Rust-based language designed for **deterministic, time-aware concurrency**. 
+### 2. Entropic Memory Management
+ICTL employs an "entropic" memory model based on the principle of state decay. Accessing or moving data structures results in entropic transformation, where field-level access propagates decay to the parent structure. This model eliminates the necessity for a traditional borrow checker while maintaining strict memory safety and preventing unauthorized concurrent access to mutable state.
 
-Unlike traditional languages that rely on non-deterministic threads and shared mutable state, ICTL models computation through **isolated timelines**, **entropic memory**, and **explicit temporal effects**. Every instruction costs time, every move has an entropic consequence, and every parallel branch is analytically reconciled.
+### 3. Isolated Timeline Concurrency
+Concurrency is modeled through the explicit bifurcation of execution timelines. The `split` operation generates independent execution branches, each equipped with its own memory arena and temporal clock. Synchronization is achieved through formal `reconcile` rules, which resolve potential acausal conflicts during timeline merger.
 
----
+## Technical Specifications
 
-## The Three Pillars
-
-### ⏳ 1. Deterministic Timing
-In ICTL, time is not a side effect—it's a first-class primitive. Every statement has a defined temporal cost. The VM ensures that execution is time-invariant through **deterministic padding**, making race conditions mathematically impossible.
-
-### 🍃 2. Entropic Memory
-Memory follows the laws of entropy. When a value is moved or a structure is accessed, its "state" changes. Field access "decays" a struct, preventing it from being moved as a whole. This eliminates entire classes of memory safety bugs without a traditional borrow checker.
-
-### 🗺️ 3. Isolated Timelines
-Concurrency is achieved by `split`-ing the current timeline into independent branches. Each branch has its own arena and clock. Merging timelines requires explicit `reconcile` rules to resolve conflicts acausally.
-
----
-
-## Language Highlights
-
-- **Entropic Topologies**: Complex, cyclically-related data structures that propagate decay across entangled timelines.
-- **Acausal Resets**: Use `anchor` and `watchdog` to rewind failing branches to previous valid states.
-- **Speculative Trials**: Execute sensitive logic in a `speculate` block with O(1) rollback on failure.
-- **Isochronous Scheduling**: Build real-time control loops with `loop tick` and double-buffered channel semantics.
-- **Paced Iteration**: Process data with strict `pacing` and temporal budgets.
-- **Static Type Declarations**: `type Point = struct { x:int, y:int }` with `let p: Point = struct { x = 1, y = 2 }` and structured `for` iteration.
-
----
+- **Implementation Language**: Rust (1.70+)
+- **Grammar**: Formal EBNF enforcement via the Pest parser generator.
+- **Analysis**: Multi-pass static semantic analysis, incorporating entropic safety verification and Worst-Case Execution Time (WCET) estimation.
+- **Virtual Machine**: Custom stack-based architecture with support for speculative execution and acausal resets.
+- **Garbage Collection**: Delta-based arena reclamation triggered by timeline collapse or reconciliation.
 
 ## Documentation Index
 
-Explore the language internals and syntax in the `docs/lang/` directory:
+Detailed specifications and technical references are maintained in the `docs/` directory. For a comprehensive overview, see the **[ICTL Documentation Hub](./docs/ictl_index.md)**.
 
-| Category                            | Topics Covered                                                                                                                                                                                         |
-| :---------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **[Intro](./docs/lang/intro/)**     | [Overview](./docs/lang/intro/overview.md), [Syntax](./docs/lang/intro/syntax.md), [Semantics](./docs/lang/intro/semantics.md)                                                                          |
-| **[Control](./docs/lang/control/)** | [Branching & Match](./docs/lang/control/branching.md), [For & Map Loops](./docs/lang/control/loops.md), [Speculation](./docs/lang/control/speculation.md), [Routines](./docs/lang/control/routines.md) |
-| **[Memory](./docs/lang/memory/)**   | [Topologies & Fields](./docs/lang/memory/topologies.md), [Promises & Await](./docs/lang/memory/promises.md), [Garbage Collection](./docs/lang/memory/gc.md)                                            |
-| **[Timing](./docs/lang/timing/)**   | [Advanced Routing](./docs/lang/timing/advanced_routing.md), [Isochronous Ticks](./docs/lang/timing/isochronous_matrix.md)                                                                              |
+| Category | Primary References |
+| :--- | :--- |
+| **Specifications** | [Formal Syntax](./docs/spec/ictl_spec_syntax.md), [Semantic Model](./docs/spec/ictl_spec_semantics.md), [Control Flow](./docs/spec/ictl_spec_control_flow.md) |
+| **Execution** | [Iteration & Pacing](./docs/spec/ictl_spec_iteration.md), [Routine Contracts](./docs/spec/ictl_spec_routines.md), [Speculative Branches](./docs/spec/ictl_spec_speculation.md) |
+| **Memory** | [Entropic Types](./docs/spec/ictl_spec_types.md), [Topological Access](./docs/spec/ictl_spec_topologies.md), [Memory Reclamation](./docs/stvm/ictl_stvm_memory_reclamation.md) |
+| **Temporal Logic** | [Timeline Routing](./docs/spec/ictl_spec_temporal_routing.md), [Isochronous Scheduling](./docs/spec/ictl_spec_isochronous_scheduling.md) |
+| **Design** | [Proposals](./docs/proposals/), [RFC Process](./docs/rfc/ictl_RFC.md) |
 
----
 
-## Getting Started
+## System Requirements and Installation
 
 ### Prerequisites
-- [Rust Toolchain](https://www.rust-lang.org/tools/install) (1.70+)
+- Rust Toolchain (Stable)
 
-### Installation & Execution
-
+### Build Instructions
 ```bash
-# Clone and enter
 git clone https://github.com/SSL-ACTX/ictl.git
 cd ictl
+cargo build --release
+```
 
-# Build the toolchain
-cargo build
-
-# Run semantic analysis + execution
+### Execution Interface
+The toolchain provides a command-line interface for analysis and execution:
+```bash
 cargo run -- --run examples/sample.ictl
 ```
 
-### CLI Flags
-- `--check`          : Perform static semantic analysis only.
-- `--run`            : Execute the program after analysis (default).
-- `--dump-ir`        : Print the lowered intermediate representation.
-- `--dump-ast`       : Print the raw abstract syntax tree.
-- `--trace-entropy`  : Show a color-coded entropic "decay map" after every instruction.
+#### Primary CLI Arguments
+- `--check`: Perform static semantic and temporal analysis without execution.
+- `--run`: Execute the provided source file following successful analysis.
+- `--dump-ir`: Output the lowered intermediate representation for debugging.
+- `--dump-ast`: Output the abstract syntax tree.
+- `--trace-entropy`: Provide a per-instruction diagnostic map of memory decay.
 
----
+## Exemplary Pattern: Temporal Watchdog
 
-## Quick Code Example: The Sentinel Pattern
-
-A watchdog intervenes if a worker timeline exceeds its temporal budget, resetting it to a safe anchor.
+The following implementation demonstrates the use of temporal anchors and watchdogs to enforce execution budgets within an isolated timeline.
 
 ```ictl
 @0ms: {
@@ -94,32 +73,28 @@ A watchdog intervenes if a worker timeline exceeds its temporal budget, resettin
 
   @worker: {
     anchor safe_checkpoint
-    let task = do_complex_calculation()
-    // If this takes too long, the watchdog below triggers
+    let result = execute_computation()
   }
 }
 
 @10ms: {
   watchdog worker timeout 5ms recovery {
-    require System.Log(message="Temporal budget exceeded. Rewinding...")
+    require System.Log(message="Temporal budget violation: initiating recovery.")
     reset worker to safe_checkpoint
   }
 }
-
-ICTL now hardens logging by making `print(expr)` and `debug(expr)` resolve to `System.Log` by default. Isolated code must declare `require System.Log` in the manifest, and runtime will fail with `TemporalError::MissingCapability("System.Log")` when the handler is absent.
 ```
 
----
-
-## Technical Architecture
-
-ICTL is implemented in Rust with a custom Stack-based Temporal VM.
-- **Parser**: Powered by [Pest](https://pest.rs/) for formal grammar enforcement.
-- **Analyzer**: Multi-pass static analysis for entropic safety and WCET (Worst-Case Execution Time) estimation.
-- **GC**: Delta-based arena reclamation triggered on branch collapse or merge.
-
----
+In ICTL, capabilities such as logging must be explicitly declared. Isolated timelines require the `System.Log` capability to be present in the manifest; failure to provide this results in a `TemporalError::MissingCapability` at runtime.
 
 ## License
 
-MIT License - Copyright (c) 2026 SSL-ACTX / ICTL Contributors.
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See the [LICENSE](LICENSE).
+
+---
+
+<div align="center">
+
+Copyright (c) 2026 SSL-ACTX / ICTL
+
+</div>
